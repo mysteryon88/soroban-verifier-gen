@@ -1,0 +1,20 @@
+[package]
+name = "soroban-verifier-gen"
+version = "0.1.0"
+edition = "2024"
+authors = ["Sergey"]
+description = "Generate Soroban smart contracts for Groth16 zero-knowledge proof verification"
+license = "MIT"
+repository = "https://github.com/mysteryon88/soroban-verifier-gen"
+keywords = ["soroban", "groth16", "zk-proof", "verification", "smart-contract"]
+categories = ["cryptography", "no-std"]
+readme = "README.md"
+rust-version = "1.85"
+
+[dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+ark-bls12-381 = "0.5"
+ark-serialize = "0.5"
