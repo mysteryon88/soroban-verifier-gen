@@ -1,4 +1,4 @@
-# soroban-verifier-gen
+# Soroban Groth16 Verifier Generator
 
 Generate Soroban smart contracts for Groth16 zero-knowledge proof verification.
 
@@ -63,16 +63,3 @@ The generator creates a complete Soroban contract crate with:
 - `src/lib.rs` with the verification contract implementation
 - Embedded verification key constants
 - Ready-to-deploy contract code
-
-## Requirements
-
-- Rust 1.85 or later
-- Soroban SDK 25.0 or later
-
-## License
-
-Licensed under the MIT license ([LICENSE-MIT](LICENSE-MIT) or http://opensource.org/licenses/MIT).
-
-## Contribution
-
-Contributions are welcome! Please feel free to submit a Pull Request.
