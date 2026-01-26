@@ -1,6 +1,6 @@
 [package]
 name = "soroban-verifier-gen"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 authors = ["Sergey Sobolev"]
 description = "Generate Soroban smart contracts for Groth16 zero-knowledge proof verification"
@@ -21,6 +21,7 @@ include = [
 
 [dependencies]
 anyhow = "1.0"
+clap = { version = "4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
