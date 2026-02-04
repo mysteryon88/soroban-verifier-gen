@@ -89,6 +89,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ark-bn254"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d69eab57e8d2663efa5c63135b2af4f396d66424f88954c21104125ab6b3e6bc"
+dependencies = [
+ "ark-ec",
+ "ark-ff",
+ "ark-std",
+]
+
+[[package]]
 name = "ark-ec"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -524,10 +535,12 @@ dependencies = [
 
 [[package]]
 name = "soroban-verifier-gen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "ark-bls12-381",
+ "ark-bn254",
+ "ark-ff",
  "ark-serialize",
  "clap",
  "serde",

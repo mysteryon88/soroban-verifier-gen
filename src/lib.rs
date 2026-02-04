@@ -5,9 +5,23 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use ark_bls12_381::{Fq, Fq2, G1Affine as ArkG1, G2Affine as ArkG2};
 use ark_serialize::CanonicalSerialize;
 use core::str::FromStr;
+
+// BLS12-381 imports
+use ark_bls12_381::{Fq as Bls12Fq, Fq2 as Bls12Fq2, G1Affine as Bls12G1, G2Affine as Bls12G2};
+
+// BN254 imports
+use ark_bn254::{Fq as Bn254Fq, Fq2 as Bn254Fq2, G1Affine as Bn254G1, G2Affine as Bn254G2};
+
+/// Elliptic curve selection for the verifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Curve {
+    /// BLS12-381 curve (default)
+    Bls12_381,
+    /// BN254 curve (also known as BN128 or alt_bn128)
+    Bn254,
+}
 
 /// Configuration options for generating a Soroban verifier contract.
 #[derive(Debug, Clone)]
@@ -20,6 +34,8 @@ pub struct GenerateOptions {
     pub crate_name: String,
     /// Name of the contract struct in the generated code.
     pub contract_name: String,
+    /// Elliptic curve to use (default: Bls12_381)
+    pub curve: Curve,
 }
 
 #[derive(Deserialize, Debug)]
@@ -47,27 +63,64 @@ fn validate_vk(vk: &VerificationKeyJson) -> Result<()> {
     Ok(())
 }
 
-fn g1_uncompressed_bytes(x: &str, y: &str) -> Result<Vec<u8>> {
-    let x = Fq::from_str(x).map_err(|_| anyhow!("bad Fq x"))?;
-    let y = Fq::from_str(y).map_err(|_| anyhow!("bad Fq y"))?;
-    let p = ArkG1::new(x, y);
+// BLS12-381 conversion functions
+fn bls12_g1_uncompressed_bytes(x: &str, y: &str) -> Result<Vec<u8>> {
+    let x = Bls12Fq::from_str(x).map_err(|_| anyhow!("bad Fq x"))?;
+    let y = Bls12Fq::from_str(y).map_err(|_| anyhow!("bad Fq y"))?;
+    let p = Bls12G1::new(x, y);
     let mut out = vec![];
     p.serialize_uncompressed(&mut out)
         .map_err(|e| anyhow!("Serialization error: {}", e))?;
     Ok(out)
 }
 
-fn g2_uncompressed_bytes(x1: &str, x2: &str, y1: &str, y2: &str) -> Result<Vec<u8>> {
-    let x1 = Fq::from_str(x1).map_err(|_| anyhow!("bad Fq x1"))?;
-    let x2 = Fq::from_str(x2).map_err(|_| anyhow!("bad Fq x2"))?;
-    let y1 = Fq::from_str(y1).map_err(|_| anyhow!("bad Fq y1"))?;
-    let y2 = Fq::from_str(y2).map_err(|_| anyhow!("bad Fq y2"))?;
-    let x = Fq2::new(x1, x2);
-    let y = Fq2::new(y1, y2);
-    let p = ArkG2::new(x, y);
+fn bls12_g2_uncompressed_bytes(x1: &str, x2: &str, y1: &str, y2: &str) -> Result<Vec<u8>> {
+    let x1 = Bls12Fq::from_str(x1).map_err(|_| anyhow!("bad Fq x1"))?;
+    let x2 = Bls12Fq::from_str(x2).map_err(|_| anyhow!("bad Fq x2"))?;
+    let y1 = Bls12Fq::from_str(y1).map_err(|_| anyhow!("bad Fq y1"))?;
+    let y2 = Bls12Fq::from_str(y2).map_err(|_| anyhow!("bad Fq y2"))?;
+    let x = Bls12Fq2::new(x1, x2);
+    let y = Bls12Fq2::new(y1, y2);
+    let p = Bls12G2::new(x, y);
     let mut out = vec![];
     p.serialize_uncompressed(&mut out)
         .map_err(|e| anyhow!("Serialization error: {}", e))?;
+    Ok(out)
+}
+
+// BN254 conversion functions - Soroban format (raw coordinates, no flags)
+fn fq_to_bytes_be(fq: &Bn254Fq) -> Vec<u8> {
+    use ark_ff::{BigInteger, PrimeField};
+    let bytes = fq.into_bigint().to_bytes_be();
+    let mut out = vec![0u8; 32];
+    let start = out.len().saturating_sub(bytes.len());
+    out[start..].copy_from_slice(&bytes);
+    out
+}
+
+fn bn254_g1_uncompressed_bytes(x: &str, y: &str) -> Result<Vec<u8>> {
+    let x = Bn254Fq::from_str(x).map_err(|_| anyhow!("bad Fq x for BN254"))?;
+    let y = Bn254Fq::from_str(y).map_err(|_| anyhow!("bad Fq y for BN254"))?;
+    let p = Bn254G1::new(x, y);
+    let mut out = Vec::with_capacity(64);
+    out.extend_from_slice(&fq_to_bytes_be(&p.x));
+    out.extend_from_slice(&fq_to_bytes_be(&p.y));
+    Ok(out)
+}
+
+fn bn254_g2_uncompressed_bytes(x1: &str, x2: &str, y1: &str, y2: &str) -> Result<Vec<u8>> {
+    let x1 = Bn254Fq::from_str(x1).map_err(|_| anyhow!("bad Fq x1 for BN254"))?;
+    let x2 = Bn254Fq::from_str(x2).map_err(|_| anyhow!("bad Fq x2 for BN254"))?;
+    let y1 = Bn254Fq::from_str(y1).map_err(|_| anyhow!("bad Fq y1 for BN254"))?;
+    let y2 = Bn254Fq::from_str(y2).map_err(|_| anyhow!("bad Fq y2 for BN254"))?;
+    let x = Bn254Fq2::new(x1, x2);
+    let y = Bn254Fq2::new(y1, y2);
+    let p = Bn254G2::new(x, y);
+    let mut out = Vec::with_capacity(128);
+    out.extend_from_slice(&fq_to_bytes_be(&p.x.c1));
+    out.extend_from_slice(&fq_to_bytes_be(&p.x.c0));
+    out.extend_from_slice(&fq_to_bytes_be(&p.y.c1));
+    out.extend_from_slice(&fq_to_bytes_be(&p.y.c0));
     Ok(out)
 }
 
@@ -90,6 +143,7 @@ fn emit_const(name: &str, size_expr: &str, bytes: &[u8]) -> String {
 
 fn render_contract_source(
     contract_name: &str,
+    curve: Curve,
     alpha: &[u8],
     beta: &[u8],
     gamma: &[u8],
@@ -101,7 +155,16 @@ fn render_contract_source(
     s.push_str("#![no_std]\n");
     s.push_str("use soroban_sdk::{\n");
     s.push_str("    contract, contracterror, contractimpl, contracttype,\n");
-    s.push_str("    crypto::bls12_381::{Fr, G1Affine, G2Affine, G1_SERIALIZED_SIZE, G2_SERIALIZED_SIZE},\n");
+
+    match curve {
+        Curve::Bls12_381 => {
+            s.push_str("    crypto::bls12_381::{Fr, G1Affine, G2Affine, G1_SERIALIZED_SIZE, G2_SERIALIZED_SIZE},\n");
+        }
+        Curve::Bn254 => {
+            s.push_str("    crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},\n");
+        }
+    }
+
     s.push_str("    Env, Vec,\n");
     s.push_str("};\n\n");
 
@@ -112,31 +175,42 @@ fn render_contract_source(
     s.push_str("    MalformedVerifyingKey = 0,\n");
     s.push_str("}\n\n");
 
+    let (g1_type, g2_type) = match curve {
+        Curve::Bls12_381 => ("G1Affine", "G2Affine"),
+        Curve::Bn254 => ("Bn254G1Affine", "Bn254G2Affine"),
+    };
+
     s.push_str("#[derive(Clone)]\n#[contracttype]\n");
     s.push_str("pub struct VerificationKey {\n");
-    s.push_str("    pub alpha: G1Affine,\n");
-    s.push_str("    pub beta: G2Affine,\n");
-    s.push_str("    pub gamma: G2Affine,\n");
-    s.push_str("    pub delta: G2Affine,\n");
-    s.push_str("    pub ic: Vec<G1Affine>,\n");
+    s.push_str(&format!("    pub alpha: {},\n", g1_type));
+    s.push_str(&format!("    pub beta: {},\n", g2_type));
+    s.push_str(&format!("    pub gamma: {},\n", g2_type));
+    s.push_str(&format!("    pub delta: {},\n", g2_type));
+    s.push_str(&format!("    pub ic: Vec<{}>,\n", g1_type));
     s.push_str("}\n\n");
 
     s.push_str("#[derive(Clone)]\n#[contracttype]\n");
     s.push_str("pub struct Proof {\n");
-    s.push_str("    pub a: G1Affine,\n");
-    s.push_str("    pub b: G2Affine,\n");
-    s.push_str("    pub c: G1Affine,\n");
+    s.push_str(&format!("    pub a: {},\n", g1_type));
+    s.push_str(&format!("    pub b: {},\n", g2_type));
+    s.push_str(&format!("    pub c: {},\n", g1_type));
     s.push_str("}\n\n");
 
+    let (g1_size, g2_size) = match curve {
+        Curve::Bls12_381 => ("G1_SERIALIZED_SIZE", "G2_SERIALIZED_SIZE"),
+        Curve::Bn254 => ("BN254_G1_SERIALIZED_SIZE", "BN254_G2_SERIALIZED_SIZE"),
+    };
+
     s.push_str("// AUTO-GENERATED VK BYTES (uncompressed). DO NOT EDIT.\n");
-    s.push_str(&emit_const("VK_ALPHA", "G1_SERIALIZED_SIZE", alpha));
-    s.push_str(&emit_const("VK_BETA", "G2_SERIALIZED_SIZE", beta));
-    s.push_str(&emit_const("VK_GAMMA", "G2_SERIALIZED_SIZE", gamma));
-    s.push_str(&emit_const("VK_DELTA", "G2_SERIALIZED_SIZE", delta));
+    s.push_str(&emit_const("VK_ALPHA", g1_size, alpha));
+    s.push_str(&emit_const("VK_BETA", g2_size, beta));
+    s.push_str(&emit_const("VK_GAMMA", g2_size, gamma));
+    s.push_str(&emit_const("VK_DELTA", g2_size, delta));
     s.push('\n');
 
     s.push_str(&format!(
-        "const VK_IC: [[u8; G1_SERIALIZED_SIZE]; {}] = [\n",
+        "const VK_IC: [[u8; {}]; {}] = [\n",
+        g1_size,
         ic.len()
     ));
     for b in ic {
@@ -147,13 +221,28 @@ fn render_contract_source(
     s.push_str("];\n\n");
 
     s.push_str("fn vk(env: &Env) -> VerificationKey {\n");
-    s.push_str("    let alpha = G1Affine::from_array(env, &VK_ALPHA);\n");
-    s.push_str("    let beta  = G2Affine::from_array(env, &VK_BETA);\n");
-    s.push_str("    let gamma = G2Affine::from_array(env, &VK_GAMMA);\n");
-    s.push_str("    let delta = G2Affine::from_array(env, &VK_DELTA);\n\n");
+    s.push_str(&format!(
+        "    let alpha = {}::from_array(env, &VK_ALPHA);\n",
+        g1_type
+    ));
+    s.push_str(&format!(
+        "    let beta  = {}::from_array(env, &VK_BETA);\n",
+        g2_type
+    ));
+    s.push_str(&format!(
+        "    let gamma = {}::from_array(env, &VK_GAMMA);\n",
+        g2_type
+    ));
+    s.push_str(&format!(
+        "    let delta = {}::from_array(env, &VK_DELTA);\n\n",
+        g2_type
+    ));
     s.push_str("    let mut ic = Vec::new(env);\n");
     s.push_str("    for p in VK_IC.iter() {\n");
-    s.push_str("        ic.push_back(G1Affine::from_array(env, p));\n");
+    s.push_str(&format!(
+        "        ic.push_back({}::from_array(env, p));\n",
+        g1_type
+    ));
     s.push_str("    }\n\n");
     s.push_str("    VerificationKey { alpha, beta, gamma, delta, ic }\n");
     s.push_str("}\n\n");
@@ -164,30 +253,62 @@ fn render_contract_source(
     s.push_str("#[contractimpl]\n");
     s.push_str(&format!("impl {} {{\n", contract_name));
     s.push_str("    pub fn verify_proof(env: Env, proof: Proof, pub_signals: Vec<Fr>) -> Result<bool, Groth16Error> {\n");
-    s.push_str("        let bls = env.crypto().bls12_381();\n");
+
+    match curve {
+        Curve::Bls12_381 => {
+            s.push_str("        let bls = env.crypto().bls12_381();\n");
+        }
+        Curve::Bn254 => {
+            s.push_str("        let bn = env.crypto().bn254();\n");
+        }
+    }
+
     s.push_str("        let vk = vk(&env);\n\n");
     s.push_str("        if pub_signals.len() + 1 != vk.ic.len() {\n");
     s.push_str("            return Err(Groth16Error::MalformedVerifyingKey);\n");
     s.push_str("        }\n\n");
     s.push_str("        let mut vk_x = vk.ic.get(0).unwrap();\n");
     s.push_str("        for (s, v) in pub_signals.iter().zip(vk.ic.iter().skip(1)) {\n");
-    s.push_str("            let prod = bls.g1_mul(&v, &s);\n");
-    s.push_str("            vk_x = bls.g1_add(&vk_x, &prod);\n");
+
+    match curve {
+        Curve::Bls12_381 => {
+            s.push_str("            let prod = bls.g1_mul(&v, &s);\n");
+            s.push_str("            vk_x = bls.g1_add(&vk_x, &prod);\n");
+        }
+        Curve::Bn254 => {
+            s.push_str("            let prod = bn.g1_mul(&v, &s);\n");
+            s.push_str("            vk_x = bn.g1_add(&vk_x, &prod);\n");
+        }
+    }
+
     s.push_str("        }\n\n");
     s.push_str("        let neg_a = -proof.a;\n");
     s.push_str("        let vp1 = soroban_sdk::vec![&env, neg_a, vk.alpha, vk_x, proof.c];\n");
     s.push_str(
         "        let vp2 = soroban_sdk::vec![&env, proof.b, vk.beta, vk.gamma, vk.delta];\n\n",
     );
-    s.push_str("        Ok(bls.pairing_check(vp1, vp2))\n");
+
+    match curve {
+        Curve::Bls12_381 => {
+            s.push_str("        Ok(bls.pairing_check(vp1, vp2))\n");
+        }
+        Curve::Bn254 => {
+            s.push_str("        Ok(bn.pairing_check(vp1, vp2))\n");
+        }
+    }
+
     s.push_str("    }\n");
     s.push_str("}\n");
 
     s
 }
 
-fn render_contract_cargo_toml(crate_name: &str) -> String {
-    // Версию soroban-sdk подстрой под свою.
+fn render_contract_cargo_toml(crate_name: &str, curve: Curve) -> String {
+    let ark_curve = match curve {
+        Curve::Bls12_381 => "ark-bls12-381 = \"0.5\"",
+        Curve::Bn254 => "ark-bn254 = \"0.5\"",
+    };
+
     format!(
         r#"[package]
 name = "{crate_name}"
@@ -204,7 +325,7 @@ soroban-sdk = "25"
 
 [dev-dependencies]
 soroban-sdk = {{ version = "25", features = ["testutils"] }}
-ark-bls12-381 = "0.5"
+{ark_curve}
 ark-serialize = "0.5"
 "#
     )
@@ -216,45 +337,83 @@ pub fn generate_verifier_contract_to_dir(opts: GenerateOptions) -> Result<()> {
     let vk: VerificationKeyJson = serde_json::from_str(&vk_str)?;
     validate_vk(&vk)?;
 
-    // Конвертация VK -> байты (uncompressed)
-    let alpha = g1_uncompressed_bytes(&vk.vk_alpha_1[0], &vk.vk_alpha_1[1])?;
+    // Конвертация VK -> байты (uncompressed) - выбор функций в зависимости от кривой
+    let (alpha, beta, gamma, delta, ic_bytes) = match opts.curve {
+        Curve::Bls12_381 => {
+            let alpha = bls12_g1_uncompressed_bytes(&vk.vk_alpha_1[0], &vk.vk_alpha_1[1])?;
 
-    let beta = g2_uncompressed_bytes(
-        &vk.vk_beta_2[0][0],
-        &vk.vk_beta_2[0][1],
-        &vk.vk_beta_2[1][0],
-        &vk.vk_beta_2[1][1],
-    )?;
+            let beta = bls12_g2_uncompressed_bytes(
+                &vk.vk_beta_2[0][0],
+                &vk.vk_beta_2[0][1],
+                &vk.vk_beta_2[1][0],
+                &vk.vk_beta_2[1][1],
+            )?;
 
-    let gamma = g2_uncompressed_bytes(
-        &vk.vk_gamma_2[0][0],
-        &vk.vk_gamma_2[0][1],
-        &vk.vk_gamma_2[1][0],
-        &vk.vk_gamma_2[1][1],
-    )?;
+            let gamma = bls12_g2_uncompressed_bytes(
+                &vk.vk_gamma_2[0][0],
+                &vk.vk_gamma_2[0][1],
+                &vk.vk_gamma_2[1][0],
+                &vk.vk_gamma_2[1][1],
+            )?;
 
-    let delta = g2_uncompressed_bytes(
-        &vk.vk_delta_2[0][0],
-        &vk.vk_delta_2[0][1],
-        &vk.vk_delta_2[1][0],
-        &vk.vk_delta_2[1][1],
-    )?;
+            let delta = bls12_g2_uncompressed_bytes(
+                &vk.vk_delta_2[0][0],
+                &vk.vk_delta_2[0][1],
+                &vk.vk_delta_2[1][0],
+                &vk.vk_delta_2[1][1],
+            )?;
 
-    let mut ic_bytes = Vec::with_capacity(vk.ic.len());
-    for p in &vk.ic {
-        ic_bytes.push(g1_uncompressed_bytes(&p[0], &p[1])?);
-    }
+            let mut ic_bytes = Vec::with_capacity(vk.ic.len());
+            for p in &vk.ic {
+                ic_bytes.push(bls12_g1_uncompressed_bytes(&p[0], &p[1])?);
+            }
+
+            (alpha, beta, gamma, delta, ic_bytes)
+        }
+        Curve::Bn254 => {
+            let alpha = bn254_g1_uncompressed_bytes(&vk.vk_alpha_1[0], &vk.vk_alpha_1[1])?;
+
+            let beta = bn254_g2_uncompressed_bytes(
+                &vk.vk_beta_2[0][0],
+                &vk.vk_beta_2[0][1],
+                &vk.vk_beta_2[1][0],
+                &vk.vk_beta_2[1][1],
+            )?;
+
+            let gamma = bn254_g2_uncompressed_bytes(
+                &vk.vk_gamma_2[0][0],
+                &vk.vk_gamma_2[0][1],
+                &vk.vk_gamma_2[1][0],
+                &vk.vk_gamma_2[1][1],
+            )?;
+
+            let delta = bn254_g2_uncompressed_bytes(
+                &vk.vk_delta_2[0][0],
+                &vk.vk_delta_2[0][1],
+                &vk.vk_delta_2[1][0],
+                &vk.vk_delta_2[1][1],
+            )?;
+
+            let mut ic_bytes = Vec::with_capacity(vk.ic.len());
+            for p in &vk.ic {
+                ic_bytes.push(bn254_g1_uncompressed_bytes(&p[0], &p[1])?);
+            }
+
+            (alpha, beta, gamma, delta, ic_bytes)
+        }
+    };
 
     // Рендер исходников
     let lib_rs = render_contract_source(
         &opts.contract_name,
+        opts.curve,
         &alpha,
         &beta,
         &gamma,
         &delta,
         &ic_bytes,
     );
-    let cargo_toml = render_contract_cargo_toml(&opts.crate_name);
+    let cargo_toml = render_contract_cargo_toml(&opts.crate_name, opts.curve);
 
     // Пишем на диск
     write_file(&opts.out_dir.join("Cargo.toml"), &cargo_toml)?;
