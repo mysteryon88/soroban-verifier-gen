@@ -1,0 +1,6 @@
+[submodule "submodules/gnark-to-snarkjs"]
+	path = submodules/gnark-to-snarkjs
+	url = https://github.com/mysteryon88/gnark-to-snarkjs.git
+[submodule "examples/data/gnark-to-snarkjs"]
+	path = examples/data/gnark-to-snarkjs
+	url = https://github.com/mysteryon88/gnark-to-snarkjs.git
