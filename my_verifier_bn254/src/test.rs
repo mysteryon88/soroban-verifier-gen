@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 extern crate std;
 
 use ark_bn254::{Fq, Fq2};
@@ -9,11 +7,12 @@ use serde::Deserialize;
 use soroban_sdk::{
     Env, U256, Vec,
     crypto::bn254::{
-        BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE, Bn254G1Affine, Bn254G2Affine, Fr,
+        BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE, Bn254Fr, Bn254G1Affine,
+        Bn254G2Affine,
     },
 };
 
-use crate::{Groth16VerifierBn254, Groth16VerifierBn254Client, Proof};
+use crate::{Groth16Error, Groth16VerifierBn254, Groth16VerifierBn254Client, Proof};
 
 #[derive(Deserialize)]
 struct ProofJson {
@@ -57,36 +56,56 @@ fn create_client(e: &Env) -> Groth16VerifierBn254Client<'_> {
     Groth16VerifierBn254Client::new(e, &contract_id)
 }
 
-#[test]
-fn test() {
-    let env = Env::default();
-
+fn load_proof_and_public_signals(env: &Env) -> (Proof, Vec<Bn254Fr>) {
     let proof_json_str = include_str!("../../examples/data/bn254/proof.json");
     let proof_json: ProofJson = serde_json::from_str(proof_json_str).unwrap();
 
     let proof = Proof {
-        a: g1_from_coords(&env, &proof_json.pi_a[0], &proof_json.pi_a[1]),
+        a: g1_from_coords(env, &proof_json.pi_a[0], &proof_json.pi_a[1]),
         b: g2_from_coords(
-            &env,
+            env,
             &proof_json.pi_b[0][0],
             &proof_json.pi_b[0][1],
             &proof_json.pi_b[1][0],
             &proof_json.pi_b[1][1],
         ),
-        c: g1_from_coords(&env, &proof_json.pi_c[0], &proof_json.pi_c[1]),
+        c: g1_from_coords(env, &proof_json.pi_c[0], &proof_json.pi_c[1]),
     };
 
-    let client = create_client(&env);
-
-    let mut output = Vec::new(&env);
+    let mut output = Vec::new(env);
     for s in &proof_json.public_signals {
         let val: u32 = s.parse().unwrap();
-        output.push_back(Fr::from_u256(U256::from_u32(&env, val)));
+        output.push_back(Bn254Fr::from_u256(U256::from_u32(env, val)));
     }
+    (proof, output)
+}
+
+#[test]
+fn accepts_valid_proof_with_expected_public_signal() {
+    let env = Env::default();
+    let (proof, output) = load_proof_and_public_signals(&env);
+    let client = create_client(&env);
+
     let res = client.verify_proof(&proof, &output);
     assert_eq!(res, true);
+}
 
-    let output = Vec::from_array(&env, [Fr::from_u256(U256::from_u32(&env, 22))]);
+#[test]
+fn rejects_valid_proof_with_wrong_public_signal() {
+    let env = Env::default();
+    let (proof, _) = load_proof_and_public_signals(&env);
+    let client = create_client(&env);
+
+    let output = Vec::from_array(&env, [Bn254Fr::from_u256(U256::from_u32(&env, 22))]);
     let res = client.verify_proof(&proof, &output);
     assert_eq!(res, false);
+}
+
+#[test]
+fn errors_when_public_signal_length_does_not_match_vk() {
+    let env = Env::default();
+    let (proof, _) = load_proof_and_public_signals(&env);
+
+    let res = Groth16VerifierBn254::verify_proof(env.clone(), proof, Vec::new(&env));
+    assert_eq!(res, Err(Groth16Error::MalformedVerifyingKey));
 }

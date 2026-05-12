@@ -158,10 +158,10 @@ fn render_contract_source(
 
     match curve {
         Curve::Bls12_381 => {
-            s.push_str("    crypto::bls12_381::{Fr, G1Affine, G2Affine, G1_SERIALIZED_SIZE, G2_SERIALIZED_SIZE},\n");
+            s.push_str("    crypto::bls12_381::{Bls12381Fr, Bls12381G1Affine, Bls12381G2Affine, G1_SERIALIZED_SIZE, G2_SERIALIZED_SIZE},\n");
         }
         Curve::Bn254 => {
-            s.push_str("    crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},\n");
+            s.push_str("    crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},\n");
         }
     }
 
@@ -176,8 +176,12 @@ fn render_contract_source(
     s.push_str("}\n\n");
 
     let (g1_type, g2_type) = match curve {
-        Curve::Bls12_381 => ("G1Affine", "G2Affine"),
+        Curve::Bls12_381 => ("Bls12381G1Affine", "Bls12381G2Affine"),
         Curve::Bn254 => ("Bn254G1Affine", "Bn254G2Affine"),
+    };
+    let fr_type = match curve {
+        Curve::Bls12_381 => "Bls12381Fr",
+        Curve::Bn254 => "Bn254Fr",
     };
 
     s.push_str("#[derive(Clone)]\n#[contracttype]\n");
@@ -252,7 +256,10 @@ fn render_contract_source(
 
     s.push_str("#[contractimpl]\n");
     s.push_str(&format!("impl {} {{\n", contract_name));
-    s.push_str("    pub fn verify_proof(env: Env, proof: Proof, pub_signals: Vec<Fr>) -> Result<bool, Groth16Error> {\n");
+    s.push_str(&format!(
+        "    pub fn verify_proof(env: Env, proof: Proof, pub_signals: Vec<{}>) -> Result<bool, Groth16Error> {{\n",
+        fr_type
+    ));
 
     match curve {
         Curve::Bls12_381 => {
@@ -305,8 +312,8 @@ fn render_contract_source(
 
 fn render_contract_cargo_toml(crate_name: &str, curve: Curve) -> String {
     let ark_curve = match curve {
-        Curve::Bls12_381 => "ark-bls12-381 = \"0.5\"",
-        Curve::Bn254 => "ark-bn254 = \"0.5\"",
+        Curve::Bls12_381 => "ark-bls12-381 = \"0.6\"",
+        Curve::Bn254 => "ark-bn254 = \"0.6\"",
     };
 
     format!(
@@ -321,12 +328,15 @@ crate-type = ["lib", "cdylib"]
 doctest = false
 
 [dependencies]
-soroban-sdk = "25"
+soroban-sdk = "26"
 
 [dev-dependencies]
-soroban-sdk = {{ version = "25", features = ["testutils"] }}
+soroban-sdk = {{ version = "26", features = ["testutils"] }}
 {ark_curve}
-ark-serialize = "0.5"
+ark-ff = "0.6"
+ark-serialize = "0.6"
+serde = {{ version = "1", features = ["derive"] }}
+serde_json = "1"
 "#
     )
 }
@@ -427,4 +437,49 @@ fn write_file(path: &Path, contents: &str) -> Result<()> {
     }
     fs::write(path, contents)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Curve, render_contract_cargo_toml, render_contract_source};
+
+    #[test]
+    fn generated_contract_cargo_toml_targets_soroban_sdk_26() {
+        for curve in [Curve::Bls12_381, Curve::Bn254] {
+            let cargo_toml = render_contract_cargo_toml("verifier", curve);
+            assert!(cargo_toml.contains("soroban-sdk = \"26\""));
+            assert!(cargo_toml.contains("soroban-sdk = { version = \"26\", features = [\"testutils\"] }"));
+            assert!(cargo_toml.contains("ark-ff = \"0.6\""));
+            assert!(cargo_toml.contains("serde = { version = \"1\", features = [\"derive\"] }"));
+            assert!(cargo_toml.contains("serde_json = \"1\""));
+        }
+    }
+
+    #[test]
+    fn generated_contract_source_uses_soroban_26_type_names() {
+        let bls_source = render_contract_source(
+            "Verifier",
+            Curve::Bls12_381,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[vec![]],
+        );
+        assert!(bls_source.contains("Bls12381Fr"));
+        assert!(bls_source.contains("Bls12381G1Affine"));
+        assert!(bls_source.contains("Bls12381G2Affine"));
+
+        let bn254_source = render_contract_source(
+            "Verifier",
+            Curve::Bn254,
+            &[],
+            &[],
+            &[],
+            &[],
+            &[vec![]],
+        );
+        assert!(bn254_source.contains("Bn254Fr"));
+        assert!(!bn254_source.contains("crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr,"));
+    }
 }

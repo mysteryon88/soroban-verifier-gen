@@ -1,12 +1,12 @@
 #![no_std]
-
 #[cfg(test)]
-mod test;
+#[path = "test.rs"]
+mod proof_test;
 
 use soroban_sdk::{
     Env, Vec, contract, contracterror, contractimpl, contracttype,
     crypto::bn254::{
-        BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE, Bn254G1Affine, Bn254G2Affine, Fr,
+        BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE, Bn254Fr, Bn254G1Affine, Bn254G2Affine,
     },
 };
 
@@ -118,7 +118,7 @@ impl Groth16VerifierBn254 {
     pub fn verify_proof(
         env: Env,
         proof: Proof,
-        pub_signals: Vec<Fr>,
+        pub_signals: Vec<Bn254Fr>,
     ) -> Result<bool, Groth16Error> {
         let bn = env.crypto().bn254();
         let vk = vk(&env);
