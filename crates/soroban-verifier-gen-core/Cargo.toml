@@ -1,0 +1,28 @@
+[package]
+name = "soroban-verifier-gen-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Core logic for generating Soroban Groth16 verifier contracts."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["soroban", "stellar", "groth16", "zk-proof", "zksnark"]
+categories = ["cryptography", "no-std", "algorithms"]
+resolver = "2"
+
+[dependencies]
+anyhow = "1.0"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+num-bigint = { version = "0.4", features = ["serde"] }
+hex = "0.4"
+
+ark-bls12-381 = "0.6"
+ark-bn254 = "0.6"
+ark-ec = "0.6"
+ark-ff = "0.6"
+ark-groth16 = "0.6"
+ark-serialize = "0.6"
+ark-std = "0.6"

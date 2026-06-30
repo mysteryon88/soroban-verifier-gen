@@ -1,0 +1,20 @@
+[package]
+name = "ark-mimc"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+ark-bls12-381 = "0.6.0"
+ark-bn254 = "0.6.0"
+ark-crypto-primitives = "0.6.0"
+ark-ec = "0.6.0"
+ark-ff = "0.6.0"
+ark-groth16 = "0.6.0"
+ark-r1cs-std = "0.6.0"
+ark-relations = "0.6.0"
+ark-serialize = "0.6.0"
+ark-std = "0.6.0"
+ark-snarkjs = "0.2.0"
+use = "0.0.1-pre.0"

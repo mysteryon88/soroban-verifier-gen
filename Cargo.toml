@@ -1,6 +1,12 @@
-[package]
-name = "soroban-verifier-gen"
-version = "0.2.0"
+﻿[workspace]
+members = [
+    "crates/soroban-verifier-gen-core",
+    "crates/soroban-verifier-gen-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.3.0"
 edition = "2024"
 authors = ["Sergey Sobolev"]
 description = "Generate Soroban smart contracts for Groth16 zero-knowledge proof verification"
@@ -9,23 +15,3 @@ repository = "https://github.com/mysteryon88/soroban-verifier-gen"
 homepage = "https://github.com/mysteryon88/soroban-verifier-gen"
 keywords = ["soroban", "stellar", "groth16", "zk-proof", "zksnark"]
 categories = ["cryptography", "no-std", "algorithms"]
-readme = "README.md"
-resolver = "2"
-
-include = [
-  "src/**",
-  "README.md",
-  "LICENSE*",
-  "Cargo.toml",
-]
-
-[dependencies]
-anyhow = "1.0"
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-
-ark-bls12-381 = "0.6"
-ark-bn254 = "0.6"
-ark-serialize = "0.6"
-ark-ff = "0.6"
