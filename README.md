@@ -2,6 +2,8 @@
 
 Generate Soroban smart contracts for Groth16 proof verification.
 
+[![dependency status](https://deps.rs/repo/github/mysteryon88/soroban-verifier-gen/status.svg)](https://deps.rs/repo/github/mysteryon88/soroban-verifier-gen)
+
 ## Features
 
 - Supports **BLS12-381** and **BN254**.
