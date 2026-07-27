@@ -102,3 +102,7 @@ cargo run -p soroban-verifier-gen -- \
 - `--bundle` is used for compact Arkworks artifacts (`groth16_artifacts.json`); when the bundle includes proof/public inputs, generated contract tests embed them.
 - `--public` is required only for formats that include public inputs in a separate file.
 - `--curve` is optional and used only for explicit format disambiguation.
+
+## Stateful gatekeeper
+
+[`stateful-gatekeeper`](./stateful-gatekeeper/) demonstrates a real proof bound to domain, canonical nullifier, VK fingerprint, contract address, network, and operation, with persistent replay state.

@@ -1,4 +1,5 @@
 use serde_json::Error as SerdeJsonError;
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Shared error type for strict parsing and generation.
@@ -10,6 +11,8 @@ pub enum Error {
         source: std::io::Error,
         context: String,
     },
+    #[error("ERR_INPUT_TOO_LARGE: {path} is {size} bytes; maximum is {max}")]
+    InputTooLarge { path: PathBuf, size: u64, max: u64 },
     #[error("ERR_JSON_PARSE: {context}: {source}")]
     JsonParse {
         #[source]

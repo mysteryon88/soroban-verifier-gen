@@ -4,7 +4,8 @@ use ark_ff::PrimeField;
 use ark_serialize::CanonicalDeserialize;
 use serde::Deserialize;
 use serde_json::Value;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::Path;
 
 use crate::curves::{CurveAdapter, create_adapter};
@@ -14,6 +15,8 @@ use crate::model::{
     Groth16VerifierInputs, SourceFormat,
 };
 use crate::snarkjs::parse_decimal;
+
+const MAX_GNARK_BINARY_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct GnarkVerificationKeyJson {
@@ -410,14 +413,15 @@ fn load_gnark_binary_vk(path: &Path, curve: CurveKind) -> Result<Groth16Verifica
     let _delta_g1 = reader.read_g1(encoding, "G1.Delta")?;
     let delta = reader.read_g2(encoding, "G2.Delta")?;
     let ic_len = reader.read_u32("G1.K length")? as usize;
+    validate_gnark_ic_len(ic_len, reader.remaining(), encoding.g1_compressed_size())?;
     let mut ic = Vec::with_capacity(ic_len);
     for idx in 0..ic_len {
         ic.push(reader.read_g1(encoding, &format!("G1.K[{idx}]"))?);
     }
-    let public_and_commitment_committed =
-        reader.read_u64_slice_slice("PublicAndCommitmentCommitted")?;
+    let public_and_commitment_committed_len =
+        reader.read_u32("PublicAndCommitmentCommitted length")?;
     let commitment_count = reader.read_u32("CommitmentKeys length")?;
-    if !public_and_commitment_committed.is_empty() || commitment_count != 0 {
+    if public_and_commitment_committed_len != 0 || commitment_count != 0 {
         return Err(Error::UnsupportedProtocol(
             "gnark commitment keys are not supported by Soroban Groth16 verifier generation"
                 .to_string(),
@@ -433,6 +437,16 @@ fn load_gnark_binary_vk(path: &Path, curve: CurveKind) -> Result<Groth16Verifica
         vk_delta_2: delta,
         ic,
     })
+}
+
+fn validate_gnark_ic_len(ic_len: usize, remaining: usize, minimum_point_size: usize) -> Result<()> {
+    let max_ic_len = remaining / minimum_point_size;
+    if ic_len == 0 || ic_len > max_ic_len {
+        return Err(Error::IcLengthMismatch(format!(
+            "gnark G1.K length {ic_len} is impossible for {remaining} remaining bytes"
+        )));
+    }
+    Ok(())
 }
 
 fn load_gnark_binary_proof(path: &Path, curve: CurveKind) -> Result<Groth16Proof> {
@@ -691,23 +705,8 @@ impl<'a> GnarkBinaryReader<'a> {
         Ok(u32::from_be_bytes(bytes.try_into().unwrap()))
     }
 
-    fn read_u64(&mut self, field: &str) -> Result<u64> {
-        let bytes = self.read_exact(8, field)?;
-        Ok(u64::from_be_bytes(bytes.try_into().unwrap()))
-    }
-
-    fn read_u64_slice_slice(&mut self, field: &str) -> Result<Vec<Vec<u64>>> {
-        let outer_len = self.read_u32(&format!("{field} length"))? as usize;
-        let mut outer = Vec::with_capacity(outer_len);
-        for outer_idx in 0..outer_len {
-            let inner_len = self.read_u32(&format!("{field}[{outer_idx}] length"))? as usize;
-            let mut inner = Vec::with_capacity(inner_len);
-            for inner_idx in 0..inner_len {
-                inner.push(self.read_u64(&format!("{field}[{outer_idx}][{inner_idx}]"))?);
-            }
-            outer.push(inner);
-        }
-        Ok(outer)
+    fn remaining(&self) -> usize {
+        self.bytes.len().saturating_sub(self.offset)
     }
 
     fn finish(&self) -> Result<()> {
@@ -1008,8 +1007,62 @@ fn read_json_value(path: &Path) -> Result<Value> {
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>> {
-    fs::read(path).map_err(|e| Error::Io {
+    let metadata = fs::metadata(path).map_err(|e| Error::Io {
         source: e,
-        context: format!("failed to read file {}", path.display()),
-    })
+        context: format!("failed to inspect file {}", path.display()),
+    })?;
+    if metadata.len() > MAX_GNARK_BINARY_BYTES {
+        return Err(Error::InputTooLarge {
+            path: path.to_path_buf(),
+            size: metadata.len(),
+            max: MAX_GNARK_BINARY_BYTES,
+        });
+    }
+
+    let file = File::open(path).map_err(|e| Error::Io {
+        source: e,
+        context: format!("failed to open file {}", path.display()),
+    })?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_GNARK_BINARY_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| Error::Io {
+            source: e,
+            context: format!("failed to read file {}", path.display()),
+        })?;
+    if bytes.len() as u64 > MAX_GNARK_BINARY_BYTES {
+        return Err(Error::InputTooLarge {
+            path: path.to_path_buf(),
+            size: bytes.len() as u64,
+            max: MAX_GNARK_BINARY_BYTES,
+        });
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_bytes, validate_gnark_ic_len};
+    use std::fs::File;
+
+    #[test]
+    fn rejects_impossible_gnark_ic_length_before_allocation() {
+        assert!(validate_gnark_ic_len(u32::MAX as usize, 64, 32).is_err());
+        assert!(validate_gnark_ic_len(0, 64, 32).is_err());
+        assert!(validate_gnark_ic_len(2, 64, 32).is_ok());
+    }
+
+    #[test]
+    fn rejects_oversized_gnark_binary_before_reading_it() {
+        let path = std::env::temp_dir().join(format!(
+            "soroban_verifier_gen_oversized_gnark_{}",
+            std::process::id()
+        ));
+        let file = File::create(&path).unwrap();
+        file.set_len(16 * 1024 * 1024 + 1).unwrap();
+
+        let err = read_bytes(&path).unwrap_err();
+        assert!(err.to_string().contains("maximum"));
+        std::fs::remove_file(path).unwrap();
+    }
 }

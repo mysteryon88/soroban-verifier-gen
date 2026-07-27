@@ -8,28 +8,19 @@ pub mod parser;
 pub mod snarkjs;
 pub mod verifier;
 
+use crate::curves::{CurveAdapter, create_adapter};
 use crate::formats::{
     load_arkworks_inputs, load_arkworks_inputs_auto, load_compact_bundle, load_gnark_binary_inputs,
     load_gnark_binary_inputs_auto, load_gnark_json_inputs,
     load_snarkjs_json_inputs_with_optional_proof, load_sp1_groth16_inputs,
 };
-use crate::model::{
-    CurveKind, Groth16G1Point, Groth16G2Point, Groth16Proof, Groth16VerifierInputs,
-};
+use crate::model::{CurveKind, Groth16Proof, Groth16VerifierInputs, SourceFormat};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-
-use ark_serialize::CanonicalSerialize;
-use core::str::FromStr;
-
-use ark_bls12_381::{
-    Fq as Bls12Fq, Fq2 as Bls12Fq2, Fr as Bls12Fr, G1Affine as Bls12G1, G2Affine as Bls12G2,
-};
-use ark_bn254::{
-    Fq as Bn254Fq, Fq2 as Bn254Fq2, Fr as Bn254Fr, G1Affine as Bn254G1, G2Affine as Bn254G2,
-};
+use tempfile::{Builder as TempDirBuilder, TempDir};
 
 /// Elliptic curve selection for the verifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +52,7 @@ impl Curve {
 pub enum SorobanSdkVersion {
     /// Soroban SDK 26.x.
     V26,
-    /// Soroban SDK 27.0.0-rc.1.
+    /// Soroban SDK 27.x.
     #[default]
     V27,
 }
@@ -70,7 +61,7 @@ impl SorobanSdkVersion {
     fn crate_version(self) -> &'static str {
         match self {
             Self::V26 => "26",
-            Self::V27 => "27.0.0-rc.1",
+            Self::V27 => "27.0.1",
         }
     }
 }
@@ -225,20 +216,6 @@ fn load_inputs_auto(
     ))
 }
 
-fn bytes_from_curve_g1(curve: Curve, point: &Groth16G1Point) -> Result<Vec<u8>> {
-    match curve {
-        Curve::Bls12_381 => bls12_g1_uncompressed_bytes(point),
-        Curve::Bn254 => bn254_g1_uncompressed_bytes(point),
-    }
-}
-
-fn bytes_from_curve_g2(curve: Curve, point: &Groth16G2Point) -> Result<Vec<u8>> {
-    match curve {
-        Curve::Bls12_381 => bls12_g2_uncompressed_bytes(point),
-        Curve::Bn254 => bn254_g2_uncompressed_bytes(point),
-    }
-}
-
 struct EmbeddedTestVectors {
     proof_a: Vec<u8>,
     proof_b: Vec<u8>,
@@ -247,100 +224,66 @@ struct EmbeddedTestVectors {
 }
 
 impl EmbeddedTestVectors {
-    fn from_proof(curve: Curve, proof: &Groth16Proof, public_inputs: &[String]) -> Result<Self> {
+    fn from_proof(
+        adapter: &dyn CurveAdapter,
+        proof: &Groth16Proof,
+        public_inputs: &[String],
+    ) -> Result<Self> {
         Ok(Self {
-            proof_a: bytes_from_curve_g1(curve, &proof.pi_a)?,
-            proof_b: bytes_from_curve_g2(curve, &proof.pi_b)?,
-            proof_c: bytes_from_curve_g1(curve, &proof.pi_c)?,
+            proof_a: adapter.serialize_g1_proof(&proof.pi_a)?,
+            proof_b: adapter.serialize_g2_proof(&proof.pi_b)?,
+            proof_c: adapter.serialize_g1_proof(&proof.pi_c)?,
             public_inputs: public_inputs
                 .iter()
-                .map(|value| fr_bytes_from_curve(curve, value))
-                .collect::<Result<Vec<_>>>()?,
+                .map(|value| adapter.serialize_fr_public_input(value))
+                .collect::<crate::error::Result<Vec<_>>>()?,
         })
     }
 }
 
-fn fr_bytes_from_curve(curve: Curve, value: &str) -> Result<Vec<u8>> {
-    match curve {
-        Curve::Bls12_381 => fr_bytes_be::<Bls12Fr>(value, "BLS12-381"),
-        Curve::Bn254 => fr_bytes_be::<Bn254Fr>(value, "BN254"),
+fn vk_fingerprint(
+    curve: Curve,
+    n_public: usize,
+    alpha: &[u8],
+    beta: &[u8],
+    gamma: &[u8],
+    delta: &[u8],
+    ic: &[Vec<u8>],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"soroban-verifier-gen:groth16-vk:v1\0");
+    hash_component(&mut hasher, curve.as_curve_hint().as_bytes());
+    hash_component(&mut hasher, &(n_public as u64).to_be_bytes());
+    for component in [alpha, beta, gamma, delta] {
+        hash_component(&mut hasher, component);
+    }
+    for point in ic {
+        hash_component(&mut hasher, point);
+    }
+    hasher.finalize().into()
+}
+
+fn hash_component(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+}
+
+fn source_format_name(source_format: SourceFormat) -> &'static str {
+    match source_format {
+        SourceFormat::SnarkjsJson => "snarkjs-json",
+        SourceFormat::Arkworks => "arkworks",
+        SourceFormat::ArkworksCompact => "arkworks-compact",
+        SourceFormat::GnarkJson => "gnark-json",
+        SourceFormat::GnarkBinary => "gnark-binary",
+        SourceFormat::Sp1Groth16 => "sp1-groth16",
     }
 }
 
-fn fr_bytes_be<F>(value: &str, curve: &str) -> Result<Vec<u8>>
-where
-    F: ark_ff::PrimeField,
-{
-    use ark_ff::BigInteger;
-
-    let scalar =
-        F::from_str(value).map_err(|_| anyhow!("bad {curve} scalar public input: {value}"))?;
-    let bytes = scalar.into_bigint().to_bytes_be();
-    let mut out = vec![0u8; 32];
-    let start = out.len().saturating_sub(bytes.len());
-    out[start..].copy_from_slice(&bytes);
-    Ok(out)
-}
-
-fn bls12_g1_uncompressed_bytes(point: &Groth16G1Point) -> Result<Vec<u8>> {
-    let x = Bls12Fq::from_str(&point.x).map_err(|_| anyhow!("bad Fq x"))?;
-    let y = Bls12Fq::from_str(&point.y).map_err(|_| anyhow!("bad Fq y"))?;
-    let p = Bls12G1::new(x, y);
-    let mut out = vec![];
-    p.serialize_uncompressed(&mut out)
-        .map_err(|e| anyhow!("failed to serialize BLS12-381 G1: {e}"))?;
-    Ok(out)
-}
-
-fn bls12_g2_uncompressed_bytes(point: &Groth16G2Point) -> Result<Vec<u8>> {
-    let x = Bls12Fq2::new(
-        Bls12Fq::from_str(&point.x0).map_err(|_| anyhow!("bad Fq x0"))?,
-        Bls12Fq::from_str(&point.x1).map_err(|_| anyhow!("bad Fq x1"))?,
-    );
-    let y = Bls12Fq2::new(
-        Bls12Fq::from_str(&point.y0).map_err(|_| anyhow!("bad Fq y0"))?,
-        Bls12Fq::from_str(&point.y1).map_err(|_| anyhow!("bad Fq y1"))?,
-    );
-    let p = Bls12G2::new(x, y);
-    let mut out = vec![];
-    p.serialize_uncompressed(&mut out)
-        .map_err(|e| anyhow!("failed to serialize BLS12-381 G2: {e}"))?;
-    Ok(out)
-}
-
-fn fq_to_bytes_be(fq: &Bn254Fq) -> Vec<u8> {
-    use ark_ff::{BigInteger, PrimeField};
-    let bytes = fq.into_bigint().to_bytes_be();
-    let mut out = vec![0u8; 32];
-    let start = out.len().saturating_sub(bytes.len());
-    out[start..].copy_from_slice(&bytes);
-    out
-}
-
-fn bn254_g1_uncompressed_bytes(point: &Groth16G1Point) -> Result<Vec<u8>> {
-    let x = Bn254Fq::from_str(&point.x).map_err(|_| anyhow!("bad Fq x for BN254"))?;
-    let y = Bn254Fq::from_str(&point.y).map_err(|_| anyhow!("bad Fq y for BN254"))?;
-    let p = Bn254G1::new(x, y);
-    Ok([&fq_to_bytes_be(&p.x)[..], &fq_to_bytes_be(&p.y)[..]].concat())
-}
-
-fn bn254_g2_uncompressed_bytes(point: &Groth16G2Point) -> Result<Vec<u8>> {
-    let x = Bn254Fq2::new(
-        Bn254Fq::from_str(&point.x0).map_err(|_| anyhow!("bad Fq x0 for BN254"))?,
-        Bn254Fq::from_str(&point.x1).map_err(|_| anyhow!("bad Fq x1 for BN254"))?,
-    );
-    let y = Bn254Fq2::new(
-        Bn254Fq::from_str(&point.y0).map_err(|_| anyhow!("bad Fq y0 for BN254"))?,
-        Bn254Fq::from_str(&point.y1).map_err(|_| anyhow!("bad Fq y1 for BN254"))?,
-    );
-    let p = Bn254G2::new(x, y);
-
-    let mut out = Vec::with_capacity(128);
-    out.extend_from_slice(&fq_to_bytes_be(&p.x.c1));
-    out.extend_from_slice(&fq_to_bytes_be(&p.x.c0));
-    out.extend_from_slice(&fq_to_bytes_be(&p.y.c1));
-    out.extend_from_slice(&fq_to_bytes_be(&p.y.c0));
-    Ok(out)
+fn serialization_name(curve: Curve) -> &'static str {
+    match curve {
+        Curve::Bls12_381 => "soroban-bls12-381-uncompressed-big-endian-v1",
+        Curve::Bn254 => "soroban-bn254-ethereum-uncompressed-big-endian-v1",
+    }
 }
 
 fn fmt_u8_list(bytes: &[u8]) -> String {
@@ -370,6 +313,8 @@ fn render_contract_source(
     gamma: &[u8],
     delta: &[u8],
     ic: &[Vec<u8>],
+    scalar_modulus: &[u8; 32],
+    fingerprint: &[u8; 32],
     test_vectors: Option<&EmbeddedTestVectors>,
 ) -> String {
     let mut s = String::new();
@@ -387,7 +332,7 @@ fn render_contract_source(
         }
     }
 
-    s.push_str("    Env, Vec,\n");
+    s.push_str("    BytesN, Env, Vec,\n");
     s.push_str("};\n\n");
 
     s.push_str("#[contracterror]\n");
@@ -395,6 +340,7 @@ fn render_contract_source(
     s.push_str("#[repr(u32)]\n");
     s.push_str("pub enum Groth16Error {\n");
     s.push_str("    MalformedVerifyingKey = 0,\n");
+    s.push_str("    NonCanonicalPublicInput = 1,\n");
     s.push_str("}\n\n");
 
     let (g1_type, g2_type) = match curve {
@@ -432,6 +378,8 @@ fn render_contract_source(
     s.push_str(&emit_const("VK_BETA", g2_size, beta));
     s.push_str(&emit_const("VK_GAMMA", g2_size, gamma));
     s.push_str(&emit_const("VK_DELTA", g2_size, delta));
+    s.push_str(&emit_const("VK_FINGERPRINT", "32", fingerprint));
+    s.push_str(&emit_const("SCALAR_MODULUS_BE", "32", scalar_modulus));
     s.push('\n');
 
     s.push_str(&format!(
@@ -498,8 +446,30 @@ fn render_contract_source(
     s.push_str(&format!("pub struct {};", contract_name));
     s.push_str("\n\n");
 
+    s.push_str(&format!(
+        "fn canonical_fr(_env: &Env, bytes: BytesN<32>) -> Result<{}, Groth16Error> {{\n",
+        fr_type
+    ));
+    s.push_str("    if bytes.to_array() >= SCALAR_MODULUS_BE {\n");
+    s.push_str("        return Err(Groth16Error::NonCanonicalPublicInput);\n");
+    s.push_str("    }\n");
+    s.push_str(&format!("    Ok({}::from_bytes(bytes))\n", fr_type));
+    s.push_str("}\n\n");
+
     s.push_str("#[contractimpl]\n");
     s.push_str(&format!("impl {} {{\n", contract_name));
+    s.push_str("    pub fn vk_fingerprint(env: Env) -> BytesN<32> {\n");
+    s.push_str("        BytesN::from_array(&env, &VK_FINGERPRINT)\n");
+    s.push_str("    }\n\n");
+    s.push_str(
+        "    pub fn verify_proof_strict(env: Env, proof: Proof, public_inputs: Vec<BytesN<32>>) -> Result<bool, Groth16Error> {\n",
+    );
+    s.push_str("        let mut pub_signals = Vec::new(&env);\n");
+    s.push_str("        for bytes in public_inputs.iter() {\n");
+    s.push_str("            pub_signals.push_back(canonical_fr(&env, bytes)?);\n");
+    s.push_str("        }\n");
+    s.push_str("        Self::verify_proof(env, proof, pub_signals)\n");
+    s.push_str("    }\n\n");
     s.push_str(&format!(
         "    pub fn verify_proof(env: Env, proof: Proof, pub_signals: Vec<{}>) -> Result<bool, Groth16Error> {{\n",
         fr_type
@@ -543,7 +513,7 @@ fn render_contract_source(
     s.push_str("\n#[cfg(test)]\n");
     s.push_str("mod test {\n");
     s.push_str("    use super::*;\n");
-    s.push_str("    use soroban_sdk::BytesN;\n\n");
+    s.push('\n');
     s.push_str("    #[test]\n");
     s.push_str("    fn rejects_wrong_public_input_count() {\n");
     s.push_str("        let env = Env::default();\n");
@@ -562,6 +532,14 @@ fn render_contract_source(
         "        assert_eq!({}::verify_proof(env, proof, pub_signals), Err(Groth16Error::MalformedVerifyingKey));\n",
         contract_name
     ));
+    s.push_str("    }\n");
+    s.push_str("\n    #[test]\n");
+    s.push_str("    fn canonical_public_input_boundaries() {\n");
+    s.push_str("        let env = Env::default();\n");
+    s.push_str("        let mut max = SCALAR_MODULUS_BE;\n");
+    s.push_str("        max[31] -= 1;\n");
+    s.push_str("        assert!(canonical_fr(&env, BytesN::from_array(&env, &max)).is_ok());\n");
+    s.push_str("        assert!(matches!(canonical_fr(&env, BytesN::from_array(&env, &SCALAR_MODULUS_BE)), Err(Groth16Error::NonCanonicalPublicInput)));\n");
     s.push_str("    }\n");
     if test_vectors.is_some() {
         s.push_str("\n    #[test]\n");
@@ -641,6 +619,7 @@ pub fn generate_verifier_contract_from_inputs_with_sdk(
     sdk_version: SorobanSdkVersion,
 ) -> Result<()> {
     let curve = Curve::from_curve_kind(&opts.inputs.curve);
+    let adapter = create_adapter(opts.inputs.curve.canonical_name())?;
     let n_public = opts
         .inputs
         .verifying_key
@@ -657,14 +636,14 @@ pub fn generate_verifier_contract_from_inputs_with_sdk(
         ));
     }
 
-    let alpha = bytes_from_curve_g1(curve, &opts.inputs.verifying_key.vk_alpha_1)?;
-    let beta = bytes_from_curve_g2(curve, &opts.inputs.verifying_key.vk_beta_2)?;
-    let gamma = bytes_from_curve_g2(curve, &opts.inputs.verifying_key.vk_gamma_2)?;
-    let delta = bytes_from_curve_g2(curve, &opts.inputs.verifying_key.vk_delta_2)?;
+    let alpha = adapter.serialize_g1_vk(&opts.inputs.verifying_key.vk_alpha_1)?;
+    let beta = adapter.serialize_g2_vk(&opts.inputs.verifying_key.vk_beta_2)?;
+    let gamma = adapter.serialize_g2_vk(&opts.inputs.verifying_key.vk_gamma_2)?;
+    let delta = adapter.serialize_g2_vk(&opts.inputs.verifying_key.vk_delta_2)?;
 
     let mut ic_bytes = Vec::with_capacity(opts.inputs.verifying_key.ic.len());
     for point in &opts.inputs.verifying_key.ic {
-        ic_bytes.push(bytes_from_curve_g1(curve, point)?);
+        ic_bytes.push(adapter.serialize_g1_vk(point)?);
     }
 
     if ic_bytes.len() != n_public + 1 {
@@ -679,8 +658,13 @@ pub fn generate_verifier_contract_from_inputs_with_sdk(
         .inputs
         .proof
         .as_ref()
-        .map(|proof| EmbeddedTestVectors::from_proof(curve, proof, &opts.inputs.public_inputs))
+        .map(|proof| {
+            EmbeddedTestVectors::from_proof(adapter.as_ref(), proof, &opts.inputs.public_inputs)
+        })
         .transpose()?;
+
+    let scalar_modulus = adapter.scalar_modulus_be();
+    let fingerprint = vk_fingerprint(curve, n_public, &alpha, &beta, &gamma, &delta, &ic_bytes);
 
     let lib_rs = render_contract_source(
         &opts.contract_name,
@@ -690,13 +674,94 @@ pub fn generate_verifier_contract_from_inputs_with_sdk(
         &gamma,
         &delta,
         &ic_bytes,
+        &scalar_modulus,
+        &fingerprint,
         test_vectors.as_ref(),
     );
     let cargo_toml = render_contract_cargo_toml(&opts.crate_name, curve, sdk_version);
+    let manifest = serde_json::to_string_pretty(&serde_json::json!({
+        "schema": "groth16-verifier-manifest-v1",
+        "generator": {
+            "name": env!("CARGO_PKG_NAME"),
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "protocol": "groth16",
+        "curve": opts.inputs.curve.canonical_name(),
+        "public_inputs": n_public,
+        "source_format": source_format_name(opts.inputs.source_format),
+        "serialization": serialization_name(curve),
+        "vk_sha256": hex::encode(fingerprint),
+        "circuit_sha256": serde_json::Value::Null,
+        "dependencies": {
+            "soroban-sdk": sdk_version.crate_version(),
+            "arkworks": "0.6",
+        },
+    }))
+    .context("failed to render verifier manifest")?;
 
-    write_file(&opts.out_dir.join("Cargo.toml"), &cargo_toml)?;
-    write_file(&opts.out_dir.join("src").join("lib.rs"), &lib_rs)?;
+    let staging = create_staging_directory(&opts.out_dir)?;
+    let staged_out = staging.path().join("output");
+    write_file(&staged_out.join("Cargo.toml"), &cargo_toml)?;
+    write_file(&staged_out.join("src").join("lib.rs"), &lib_rs)?;
+    write_file(
+        &staged_out.join("verifier-manifest.json"),
+        &format!("{manifest}\n"),
+    )?;
+    publish_staged_directory(staging, &staged_out, &opts.out_dir)?;
     Ok(())
+}
+
+fn create_staging_directory(out_dir: &Path) -> Result<TempDir> {
+    let parent = out_dir
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create output parent {}", parent.display()))?;
+    TempDirBuilder::new()
+        .prefix(".soroban-verifier-gen-")
+        .tempdir_in(parent)
+        .with_context(|| format!("failed to create staging directory in {}", parent.display()))
+}
+
+fn publish_staged_directory(staging: TempDir, staged_out: &Path, out_dir: &Path) -> Result<()> {
+    let backup = staging.path().join("previous-output");
+    let had_existing = out_dir.exists();
+    if had_existing {
+        fs::rename(out_dir, &backup)
+            .with_context(|| format!("failed to stage existing output {}", out_dir.display()))?;
+    }
+
+    if let Err(publish_error) = fs::rename(staged_out, out_dir) {
+        if had_existing {
+            return restore_previous_output_or_preserve(staging, &backup, out_dir, publish_error);
+        }
+        return Err(publish_error)
+            .with_context(|| format!("failed to publish generated output {}", out_dir.display()));
+    }
+    Ok(())
+}
+
+fn restore_previous_output_or_preserve(
+    staging: TempDir,
+    backup: &Path,
+    out_dir: &Path,
+    publish_error: std::io::Error,
+) -> Result<()> {
+    match fs::rename(backup, out_dir) {
+        Ok(()) => Err(publish_error)
+            .with_context(|| format!("failed to publish generated output {}", out_dir.display())),
+        Err(rollback_error) => {
+            let preserved = staging.keep().join("previous-output");
+            Err(rollback_error).with_context(|| {
+                format!(
+                    "failed to restore {} after publish failed ({publish_error}); previous output preserved at {}",
+                    out_dir.display(),
+                    preserved.display()
+                )
+            })
+        }
+    }
 }
 
 fn write_file(path: &Path, contents: &str) -> Result<()> {
@@ -712,19 +777,174 @@ fn write_file(path: &Path, contents: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Curve, EmbeddedTestVectors, SorobanSdkVersion, render_contract_cargo_toml,
-        render_contract_source,
+        Curve, EmbeddedTestVectors, GenerateInputsOptions, SorobanSdkVersion,
+        create_staging_directory, generate_verifier_contract_from_inputs,
+        generate_verifier_contract_from_inputs_with_sdk, load_verifier_inputs,
+        publish_staged_directory, render_contract_cargo_toml, render_contract_source,
     };
+    use crate::model::{
+        CurveKind, Groth16G1Point, Groth16G2Point, Groth16VerificationKey, Groth16VerifierInputs,
+        SourceFormat,
+    };
+    use ark_bls12_381::{
+        Fq as BlsFq, Fq2 as BlsFq2, G1Affine as BlsG1Affine, G2Affine as BlsG2Affine,
+    };
+    use ark_bn254::{Fq, Fq2, G1Affine, G2Affine};
+    use ark_ec::AffineRepr;
+    use ark_ff::{Field, One, PrimeField, Zero};
+    use std::{fs, panic::AssertUnwindSafe, process::Command};
+
+    #[test]
+    fn failed_publish_restores_existing_output() {
+        let parent = tempfile::tempdir().unwrap();
+        let out = parent.path().join("generated");
+        fs::create_dir(&out).unwrap();
+        fs::write(out.join("keep.txt"), "existing output").unwrap();
+        let staging = create_staging_directory(&out).unwrap();
+        let missing_staged_output = staging.path().join("missing");
+
+        assert!(publish_staged_directory(staging, &missing_staged_output, &out).is_err());
+        assert_eq!(
+            fs::read_to_string(out.join("keep.txt")).unwrap(),
+            "existing output"
+        );
+    }
+
+    #[test]
+    fn failed_rollback_preserves_backup_on_disk() {
+        let parent = tempfile::tempdir().unwrap();
+        let out = parent.path().join("generated");
+        fs::create_dir(&out).unwrap();
+        fs::write(out.join("occupied.txt"), "concurrent output").unwrap();
+        let staging = create_staging_directory(&out).unwrap();
+        let staging_path = staging.path().to_path_buf();
+        let backup = staging.path().join("previous-output");
+        fs::create_dir(&backup).unwrap();
+        fs::write(backup.join("keep.txt"), "existing output").unwrap();
+
+        let err = super::restore_previous_output_or_preserve(
+            staging,
+            &backup,
+            &out,
+            std::io::Error::other("publish failed"),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("previous output preserved"));
+        assert_eq!(
+            fs::read_to_string(staging_path.join("previous-output/keep.txt")).unwrap(),
+            "existing output"
+        );
+        fs::remove_dir_all(staging_path).unwrap();
+    }
+
+    fn bn254_g1(z: u64) -> Groth16G1Point {
+        let affine = G1Affine::generator();
+        let z = Fq::from(z);
+        Groth16G1Point {
+            x: (affine.x * z.square()).to_string(),
+            y: (affine.y * z.square() * z).to_string(),
+            z: z.to_string(),
+        }
+    }
+
+    fn bn254_g2(z: u64) -> Groth16G2Point {
+        let affine = G2Affine::generator();
+        let z = Fq2::new(Fq::from(z), Fq::zero());
+        let x = affine.x * z.square();
+        let y = affine.y * z.square() * z;
+        Groth16G2Point {
+            x0: x.c0.to_string(),
+            x1: x.c1.to_string(),
+            y0: y.c0.to_string(),
+            y1: y.c1.to_string(),
+            z0: z.c0.to_string(),
+            z1: z.c1.to_string(),
+        }
+    }
+
+    fn bn254_inputs(z: u64) -> Groth16VerifierInputs {
+        Groth16VerifierInputs {
+            curve: CurveKind::Bn254,
+            protocol: "groth16".to_string(),
+            verifying_key: Groth16VerificationKey {
+                n_public: 0,
+                vk_alpha_1: bn254_g1(z),
+                vk_beta_2: bn254_g2(z),
+                vk_gamma_2: bn254_g2(z),
+                vk_delta_2: bn254_g2(z),
+                ic: vec![bn254_g1(z)],
+            },
+            proof: None,
+            public_inputs: vec![],
+            source_format: SourceFormat::SnarkjsJson,
+        }
+    }
+
+    fn bls_g1(z: u64) -> Groth16G1Point {
+        let affine = BlsG1Affine::generator();
+        let z = BlsFq::from(z);
+        Groth16G1Point {
+            x: (affine.x * z.square()).to_string(),
+            y: (affine.y * z.square() * z).to_string(),
+            z: z.to_string(),
+        }
+    }
+
+    fn bls_g2(z: u64) -> Groth16G2Point {
+        let affine = BlsG2Affine::generator();
+        let z = BlsFq2::new(BlsFq::from(z), BlsFq::zero());
+        let x = affine.x * z.square();
+        let y = affine.y * z.square() * z;
+        Groth16G2Point {
+            x0: x.c0.to_string(),
+            x1: x.c1.to_string(),
+            y0: y.c0.to_string(),
+            y1: y.c1.to_string(),
+            z0: z.c0.to_string(),
+            z1: z.c1.to_string(),
+        }
+    }
+
+    fn bls_inputs(z: u64) -> Groth16VerifierInputs {
+        Groth16VerifierInputs {
+            curve: CurveKind::Bls12_381,
+            protocol: "groth16".to_string(),
+            verifying_key: Groth16VerificationKey {
+                n_public: 0,
+                vk_alpha_1: bls_g1(z),
+                vk_beta_2: bls_g2(z),
+                vk_gamma_2: bls_g2(z),
+                vk_delta_2: bls_g2(z),
+                ic: vec![bls_g1(z)],
+            },
+            proof: None,
+            public_inputs: vec![],
+            source_format: SourceFormat::SnarkjsJson,
+        }
+    }
+
+    fn generate_bn254(
+        inputs: Groth16VerifierInputs,
+        out_dir: std::path::PathBuf,
+    ) -> anyhow::Result<()> {
+        generate_verifier_contract_from_inputs(GenerateInputsOptions {
+            inputs,
+            out_dir,
+            crate_name: "verifier".to_string(),
+            contract_name: "Verifier".to_string(),
+        })
+    }
 
     #[test]
     fn generated_contract_cargo_toml_targets_soroban_sdk_27_by_default() {
         for curve in [Curve::Bls12_381, Curve::Bn254] {
             let cargo_toml =
                 render_contract_cargo_toml("verifier", curve, SorobanSdkVersion::default());
-            assert!(cargo_toml.contains("soroban-sdk = \"27.0.0-rc.1\""));
-            assert!(cargo_toml.contains(
-                "soroban-sdk = { version = \"27.0.0-rc.1\", features = [\"testutils\"] }"
-            ));
+            assert!(cargo_toml.contains("soroban-sdk = \"27.0.1\""));
+            assert!(
+                cargo_toml
+                    .contains("soroban-sdk = { version = \"27.0.1\", features = [\"testutils\"] }")
+            );
             assert!(cargo_toml.contains("[workspace]"));
             assert!(cargo_toml.contains("[profile.release]"));
             assert!(cargo_toml.contains("overflow-checks = true"));
@@ -756,6 +976,8 @@ mod tests {
             &[],
             &[],
             &[vec![]],
+            &[0; 32],
+            &[0; 32],
             None,
         );
         assert!(bls_source.contains("Bls12381Fr"));
@@ -771,6 +993,8 @@ mod tests {
             &[],
             &[],
             &[vec![]],
+            &[0; 32],
+            &[0; 32],
             None,
         );
         assert!(bn254_source.contains("Bn254Fr"));
@@ -795,6 +1019,8 @@ mod tests {
             &[0; 192],
             &[0; 192],
             &[vec![0; 96], vec![0; 96]],
+            &[0; 32],
+            &[0; 32],
             Some(&vectors),
         );
 
@@ -805,5 +1031,191 @@ mod tests {
             source
                 .contains("assert_eq!(Verifier::verify_proof(env, proof, pub_signals), Ok(true));")
         );
+    }
+
+    #[test]
+    fn generation_normalizes_projective_vk_coordinates() {
+        let affine_dir = tempfile::tempdir().unwrap();
+        let projective_dir = tempfile::tempdir().unwrap();
+        let affine_out = affine_dir.path().join("verifier");
+        let projective_out = projective_dir.path().join("verifier");
+
+        generate_bn254(bn254_inputs(1), affine_out.clone()).unwrap();
+        generate_bn254(bn254_inputs(2), projective_out.clone()).unwrap();
+
+        assert_eq!(
+            fs::read(affine_out.join("src/lib.rs")).unwrap(),
+            fs::read(projective_out.join("src/lib.rs")).unwrap(),
+        );
+
+        let affine_dir = tempfile::tempdir().unwrap();
+        let projective_dir = tempfile::tempdir().unwrap();
+        let affine_out = affine_dir.path().join("verifier");
+        let projective_out = projective_dir.path().join("verifier");
+        generate_bn254(bls_inputs(1), affine_out.clone()).unwrap();
+        generate_bn254(bls_inputs(2), projective_out.clone()).unwrap();
+        assert_eq!(
+            fs::read(affine_out.join("src/lib.rs")).unwrap(),
+            fs::read(projective_out.join("src/lib.rs")).unwrap(),
+        );
+    }
+
+    #[test]
+    fn generation_rejects_zero_projective_z_before_writing_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join("verifier");
+
+        let result = generate_bn254(bn254_inputs(0), out.clone());
+
+        assert!(result.is_err());
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn generation_rejects_off_curve_vk_without_panicking_or_writing_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join("verifier");
+        let mut inputs = bn254_inputs(1);
+        inputs.verifying_key.vk_alpha_1 = Groth16G1Point {
+            x: "1".to_string(),
+            y: "1".to_string(),
+            z: "1".to_string(),
+        };
+
+        let caught =
+            std::panic::catch_unwind(AssertUnwindSafe(|| generate_bn254(inputs, out.clone())));
+
+        assert!(
+            caught.is_ok(),
+            "untrusted VK must never panic the generator"
+        );
+        assert!(caught.unwrap().is_err());
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn generation_rejects_off_curve_g2_and_field_overflow() {
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join("off-curve-g2");
+        let mut inputs = bn254_inputs(1);
+        inputs.verifying_key.vk_beta_2 = Groth16G2Point {
+            x0: "1".to_string(),
+            x1: "1".to_string(),
+            y0: "1".to_string(),
+            y1: "1".to_string(),
+            z0: "1".to_string(),
+            z1: "0".to_string(),
+        };
+        assert!(generate_bn254(inputs, out.clone()).is_err());
+        assert!(!out.exists());
+
+        let out = temp.path().join("field-overflow");
+        let mut inputs = bn254_inputs(1);
+        inputs.verifying_key.vk_alpha_1.x = Fq::MODULUS.to_string();
+        assert!(generate_bn254(inputs, out.clone()).is_err());
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn generation_rejects_wrong_subgroup_and_identity_points() {
+        let non_subgroup = (0u64..1000)
+            .find_map(|candidate| {
+                let x = Fq2::new(Fq::from(candidate), Fq::one());
+                G2Affine::get_point_from_x_unchecked(x, false)
+                    .filter(|point| !point.is_in_correct_subgroup_assuming_on_curve())
+            })
+            .expect("test fixture must find a deterministic non-subgroup point");
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join("wrong-subgroup");
+        let mut inputs = bn254_inputs(1);
+        inputs.verifying_key.vk_beta_2 = Groth16G2Point {
+            x0: non_subgroup.x.c0.to_string(),
+            x1: non_subgroup.x.c1.to_string(),
+            y0: non_subgroup.y.c0.to_string(),
+            y1: non_subgroup.y.c1.to_string(),
+            z0: "1".to_string(),
+            z1: "0".to_string(),
+        };
+        assert!(generate_bn254(inputs, out.clone()).is_err());
+        assert!(!out.exists());
+
+        let out = temp.path().join("identity");
+        let mut inputs = bn254_inputs(1);
+        inputs.verifying_key.vk_alpha_1 = Groth16G1Point {
+            x: "0".to_string(),
+            y: "0".to_string(),
+            z: "1".to_string(),
+        };
+        assert!(generate_bn254(inputs, out.clone()).is_err());
+        assert!(!out.exists());
+    }
+
+    #[test]
+    fn malformed_artifact_returns_error_without_panicking() {
+        let temp = tempfile::tempdir().unwrap();
+        let malformed = temp.path().join("vk.json");
+        fs::write(&malformed, b"{not-json").unwrap();
+
+        let caught = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            load_verifier_inputs(Some(&malformed), None, None, None, Some("bn254"))
+        }));
+
+        assert!(caught.is_ok());
+        assert!(caught.unwrap().is_err());
+    }
+
+    #[test]
+    fn generated_contract_has_strict_public_input_api_and_vk_fingerprint() {
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join("verifier");
+        generate_bn254(bn254_inputs(1), out.clone()).unwrap();
+
+        let source = fs::read_to_string(out.join("src/lib.rs")).unwrap();
+        assert!(source.contains("pub fn verify_proof_strict"));
+        assert!(source.contains("NonCanonicalPublicInput"));
+        assert!(source.contains("VK_FINGERPRINT"));
+        assert!(source.contains("pub fn vk_fingerprint"));
+
+        let manifest = fs::read_to_string(out.join("verifier-manifest.json")).unwrap();
+        assert!(manifest.contains("\"vk_sha256\""));
+        assert!(manifest.contains("\"curve\": \"bn254\""));
+        assert!(manifest.contains("\"public_inputs\": 0"));
+    }
+
+    #[test]
+    #[ignore = "slow: compiles generated contracts against supported Soroban SDK versions"]
+    fn generated_contracts_build_and_run_for_both_curves() {
+        for (sdk_name, sdk) in [
+            ("sdk26", SorobanSdkVersion::V26),
+            ("sdk27", SorobanSdkVersion::V27),
+        ] {
+            for (curve_name, inputs) in [("bn254", bn254_inputs(1)), ("bls12381", bls_inputs(1))] {
+                let temp = tempfile::tempdir().unwrap();
+                let out = temp.path().join(format!("{sdk_name}-{curve_name}"));
+                generate_verifier_contract_from_inputs_with_sdk(
+                    GenerateInputsOptions {
+                        inputs,
+                        out_dir: out.clone(),
+                        crate_name: "verifier".to_string(),
+                        contract_name: "Verifier".to_string(),
+                    },
+                    sdk,
+                )
+                .unwrap();
+
+                let output = Command::new(env!("CARGO"))
+                    .args(["test", "--all-targets"])
+                    .current_dir(&out)
+                    .env("CARGO_TARGET_DIR", temp.path().join("target"))
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "generated {curve_name} contract for {sdk_name} failed:\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
     }
 }

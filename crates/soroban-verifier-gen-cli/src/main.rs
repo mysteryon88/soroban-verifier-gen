@@ -62,7 +62,7 @@ struct Args {
     #[arg(long, short, default_value = "verifier")]
     out: PathBuf,
 
-    /// Generated crate name (Cargo.toml [package].name)
+    /// Generated crate name (`Cargo.toml` package name)
     #[arg(long, default_value = "verifier")]
     crate_name: String,
 

@@ -1,10 +1,10 @@
 use ark_bn254::{Bn254, Fq, Fq2, Fr, G1Affine, G2Affine};
+use ark_ec::AffineRepr;
 use ark_ff::{BigInteger, Field, PrimeField, Zero};
 use ark_groth16::{Groth16, Proof, VerifyingKey, prepare_verifying_key};
 use num_bigint::BigUint;
 use std::str::FromStr;
 
-use crate::bytes::to_le_padded_bytes;
 use crate::curves::{CurveAdapter, CurveId, PointFormat};
 use crate::error::{Error, Result};
 use crate::model::{
@@ -42,7 +42,11 @@ impl CurveAdapter for Bn254Adapter {
     }
 
     fn serialize_fr_public_input(&self, value: &DecimalValue) -> Result<Vec<u8>> {
-        serialize_fr_le(value)
+        serialize_fr_be(value)
+    }
+
+    fn scalar_modulus_be(&self) -> [u8; 32] {
+        modulus_be::<Fr>()
     }
 
     fn local_verify(&self, inputs: &Groth16VerifierInputs) -> Result<bool> {
@@ -70,32 +74,40 @@ impl CurveAdapter for Bn254Adapter {
 
 fn serialize_g1_uncompressed(point: &Groth16G1Point) -> Result<Vec<u8>> {
     let point = normalize_g1(point)?;
-    let x = point.x.into_bigint().to_bytes_le();
-    let y = point.y.into_bigint().to_bytes_le();
     let mut out = Vec::with_capacity(64);
-    out.extend_from_slice(&to_le_padded_bytes(&BigUint::from_bytes_le(&x), 32));
-    out.extend_from_slice(&to_le_padded_bytes(&BigUint::from_bytes_le(&y), 32));
+    out.extend_from_slice(&field_bytes_be(&point.x));
+    out.extend_from_slice(&field_bytes_be(&point.y));
     Ok(out)
 }
 
 fn serialize_g2_uncompressed(point: &Groth16G2Point) -> Result<Vec<u8>> {
     let point = normalize_g2(point)?;
     let mut out = Vec::with_capacity(128);
-    let x_c0 = point.x.c0.into_bigint().to_bytes_le();
-    let x_c1 = point.x.c1.into_bigint().to_bytes_le();
-    let y_c0 = point.y.c0.into_bigint().to_bytes_le();
-    let y_c1 = point.y.c1.into_bigint().to_bytes_le();
-    out.extend_from_slice(&to_le_padded_bytes(&BigUint::from_bytes_le(&x_c0), 32));
-    out.extend_from_slice(&to_le_padded_bytes(&BigUint::from_bytes_le(&x_c1), 32));
-    out.extend_from_slice(&to_le_padded_bytes(&BigUint::from_bytes_le(&y_c0), 32));
-    out.extend_from_slice(&to_le_padded_bytes(&BigUint::from_bytes_le(&y_c1), 32));
+    // Soroban follows the Ethereum precompile layout for Fq2: c1 || c0.
+    out.extend_from_slice(&field_bytes_be(&point.x.c1));
+    out.extend_from_slice(&field_bytes_be(&point.x.c0));
+    out.extend_from_slice(&field_bytes_be(&point.y.c1));
+    out.extend_from_slice(&field_bytes_be(&point.y.c0));
     Ok(out)
 }
 
-fn serialize_fr_le(value: &DecimalValue) -> Result<Vec<u8>> {
+fn serialize_fr_be(value: &DecimalValue) -> Result<Vec<u8>> {
     let scalar = parse_field_fr(value, "public input")?;
-    let bytes = scalar.into_bigint().to_bytes_le();
-    Ok(to_le_padded_bytes(&BigUint::from_bytes_le(&bytes), 32))
+    Ok(field_bytes_be(&scalar).to_vec())
+}
+
+fn field_bytes_be<F: PrimeField>(value: &F) -> [u8; 32] {
+    let bytes = value.into_bigint().to_bytes_be();
+    let mut out = [0u8; 32];
+    out[32 - bytes.len()..].copy_from_slice(&bytes);
+    out
+}
+
+fn modulus_be<F: PrimeField>() -> [u8; 32] {
+    let bytes = F::MODULUS.to_bytes_be();
+    let mut out = [0u8; 32];
+    out[32 - bytes.len()..].copy_from_slice(&bytes);
+    out
 }
 
 fn convert_vkey(vk: &Groth16VerificationKey) -> Result<VerifyingKey<Bn254>> {
@@ -140,6 +152,9 @@ fn normalize_g1(point: &Groth16G1Point) -> Result<G1Affine> {
     let z_inv3 = z_inv2 * z_inv;
     let affine = G1Affine::new_unchecked(x * z_inv2, y * z_inv3);
 
+    if affine.is_zero() {
+        return Err(Error::MalformedG1("g1 identity is not allowed".to_string()));
+    }
     if !affine.is_on_curve() {
         return Err(Error::PointNotOnCurve(
             "g1 point is not on curve".to_string(),
@@ -178,6 +193,9 @@ fn normalize_g2(point: &Groth16G2Point) -> Result<G2Affine> {
     let z_inv3 = z_inv2 * z_inv;
     let affine = G2Affine::new_unchecked(x * z_inv2, y * z_inv3);
 
+    if affine.is_zero() {
+        return Err(Error::MalformedG2("g2 identity is not allowed".to_string()));
+    }
     if !affine.is_on_curve() {
         return Err(Error::PointNotOnCurve(
             "g2 point is not on curve".to_string(),

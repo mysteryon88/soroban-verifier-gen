@@ -226,7 +226,9 @@ fn parse_bn254_vk(vk_hex: &str) -> Result<VerificationKey> {
     Ok(VerificationKey {
         protocol: None,
         curve: Some("bn254".to_string()),
-        n_public: vk.gamma_abc_g1.len() - 1,
+        n_public: vk.gamma_abc_g1.len().checked_sub(1).ok_or_else(|| {
+            Error::IcLengthMismatch("compact BN254 VK has no IC points".to_string())
+        })?,
         vk_alpha_1,
         vk_beta_2,
         vk_gamma_2,
@@ -283,7 +285,9 @@ fn parse_bls_vk(vk_hex: &str) -> Result<VerificationKey> {
     Ok(VerificationKey {
         protocol: None,
         curve: Some("bls12381".to_string()),
-        n_public: vk.gamma_abc_g1.len() - 1,
+        n_public: vk.gamma_abc_g1.len().checked_sub(1).ok_or_else(|| {
+            Error::IcLengthMismatch("compact BLS12-381 VK has no IC points".to_string())
+        })?,
         vk_alpha_1,
         vk_beta_2,
         vk_gamma_2,

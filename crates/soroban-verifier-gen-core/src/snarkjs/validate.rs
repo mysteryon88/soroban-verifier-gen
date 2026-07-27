@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::model::expected_ic_len;
 use crate::snarkjs::{Proof, VerificationKey};
 
 fn normalize_protocol(protocol: &str) -> String {
@@ -78,7 +79,7 @@ pub fn validate_public_counts(vk: &VerificationKey, public_inputs: &[String]) ->
             public_inputs.len()
         )));
     }
-    if vk.ic.len() != vk.n_public + 1 {
+    if vk.ic.len() != expected_ic_len(vk.n_public)? {
         return Err(Error::IcLengthMismatch(format!(
             "expected IC length = nPublic + 1, got {}",
             vk.ic.len()

@@ -7,6 +7,12 @@ use crate::snarkjs::{
 
 pub type DecimalValue = String;
 
+pub(crate) fn expected_ic_len(n_public: usize) -> Result<usize> {
+    n_public.checked_add(1).ok_or_else(|| {
+        Error::IcLengthMismatch("nPublic is too large to represent IC length".to_string())
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CurveKind {
     Bn254,
@@ -134,7 +140,7 @@ impl Groth16VerifierInputs {
         validate_protocol(vk.protocol.as_ref(), None)?;
         validate_verification_key_geometry(&vk)?;
 
-        if vk.ic.len() != vk.n_public + 1 {
+        if vk.ic.len() != expected_ic_len(vk.n_public)? {
             return Err(Error::IcLengthMismatch(format!(
                 "expected IC length = nPublic + 1, got {}",
                 vk.ic.len()
@@ -176,7 +182,7 @@ impl Groth16VerifierInputs {
         public_inputs: Vec<DecimalValue>,
         source_format: SourceFormat,
     ) -> Result<Self> {
-        if verifying_key.ic.len() != verifying_key.n_public + 1 {
+        if verifying_key.ic.len() != expected_ic_len(verifying_key.n_public)? {
             return Err(Error::IcLengthMismatch(format!(
                 "expected {} IC points, got {}",
                 verifying_key.n_public + 1,
@@ -241,4 +247,14 @@ impl From<SnarkJsG2> for Groth16G2Point {
 
 fn normalize_curve_name(value: &str) -> String {
     value.to_lowercase().replace(['-', '_'], "")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expected_ic_len;
+
+    #[test]
+    fn oversized_public_input_count_returns_error() {
+        assert!(expected_ic_len(usize::MAX).is_err());
+    }
 }

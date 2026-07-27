@@ -1,0 +1,42 @@
+name: security-ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-and-generated-contracts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install Rust components
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+      - name: Verify locked dependency graph
+        run: cargo metadata --format-version 1 --locked --no-deps
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Build
+        run: cargo build --workspace --all-targets --locked
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --all-targets --locked
+      - name: Test generated BN254 and BLS12-381 contracts on SDK 26 and 27
+        run: cargo test -p soroban-verifier-gen-core --locked generated_contracts_build_and_run_for_both_curves -- --ignored --nocapture
+      - name: Test stateful replay gatekeeper
+        run: cargo test --manifest-path examples/stateful-gatekeeper/Cargo.toml --locked
+      - name: Documentation
+        run: cargo doc --workspace --no-deps --locked
+      - name: Audit dependencies
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit
+      - name: Enforce dependency policy
+        run: |
+          cargo install cargo-deny --version 0.20.2 --locked
+          cargo deny check

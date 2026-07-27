@@ -97,3 +97,19 @@ fn main() -> anyhow::Result<()> {
 ```
 
 For examples and prebuilt fixtures, see `examples/`.
+
+## Security considerations
+
+Generated verifiers are stateless: a valid Groth16 proof is not a one-time authorization. Applications that authorize a state change must include a domain-separated nullifier in the circuit public inputs, reject a used nullifier, and persist it only after proof verification succeeds. Bind the statement to the contract address, network identifier, operation, and generated VK fingerprint. See [the stateful gatekeeper example](./examples/stateful-gatekeeper/).
+
+Public inputs received from outside the contract must use `verify_proof_strict(Vec<BytesN<32>>)`. It rejects non-canonical field encodings (`x >= r`) before the Soroban SDK constructs an `Fr`. The typed `Bn254Fr`/`Bls12381Fr` constructors reduce `U256` modulo `r`, so using raw `U256` values as replay-storage keys is unsafe unless they have first been canonicalized.
+
+The generated `verifier-manifest.json` and `vk_fingerprint()` accessor identify the exact canonical VK embedded in the contract. The SHA-256 fingerprint provides integrity and circuit/VK binding only; it does not establish authenticity, prove that a trusted setup ceremony was honest, or eliminate toxic waste. Obtain the expected fingerprint through an authenticated release process and review generated code before production deployment.
+
+Only BN254 and BLS12-381 are supported. Input artifacts are checked for canonical coordinates, on-curve and subgroup membership, identity points, public-input count, and supported encodings before files are written.
+
+## Migration notes
+
+- New generated contracts default to `soroban-sdk = 27.0.1`; SDK 26 remains available through `--soroban-sdk-version v26`.
+- Integrations accepting externally encoded public inputs should migrate from the modulo-reducing typed verifier call to `verify_proof_strict`.
+- Generated output now includes `verifier-manifest.json`, `VK_FINGERPRINT`, and `vk_fingerprint()`.
