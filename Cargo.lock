@@ -1240,7 +1240,7 @@ checksum = "8ed6a63f02c8539c91a8685a86f4099661ba3da017932f6ebbea6de3f0fa7c90"
 
 [[package]]
 name = "soroban-verifier-gen"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1249,7 +1249,7 @@ dependencies = [
 
 [[package]]
 name = "soroban-verifier-gen-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "ark-bls12-381",

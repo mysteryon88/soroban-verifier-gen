@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "soroban-verifier-gen"
 version.workspace = true
 edition.workspace = true
@@ -17,4 +17,4 @@ path = "src/main.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 anyhow = "1.0"
-soroban-verifier-gen-core = { version = "0.4.0", path = "../soroban-verifier-gen-core" }
+soroban-verifier-gen-core = { version = "0.4.1", path = "../soroban-verifier-gen-core" }
