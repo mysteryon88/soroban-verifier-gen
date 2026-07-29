@@ -14,6 +14,7 @@ use crate::model::{
     CurveKind, Groth16G1Point, Groth16G2Point, Groth16Proof, Groth16VerificationKey,
     Groth16VerifierInputs, SourceFormat,
 };
+use crate::parser::{MAX_COLLECTION_ITEMS, read_bounded_text};
 use crate::snarkjs::parse_decimal;
 
 const MAX_GNARK_BINARY_BYTES: u64 = 16 * 1024 * 1024;
@@ -346,6 +347,12 @@ fn load_gnark_json_proof(path: &Path) -> Result<Groth16Proof> {
 }
 
 fn vk_from_json(vk: GnarkVerificationKeyJson) -> Result<Groth16VerificationKey> {
+    if vk.g1.k.is_empty() || vk.g1.k.len() > MAX_COLLECTION_ITEMS {
+        return Err(Error::IcLengthMismatch(format!(
+            "G1.K length must be between 1 and {MAX_COLLECTION_ITEMS}, got {}",
+            vk.g1.k.len()
+        )));
+    }
     let ic = vk
         .g1
         .k
@@ -950,11 +957,18 @@ fn load_optional_public_inputs(path: Option<&Path>) -> Result<Vec<String>> {
 
 fn parse_public_inputs_value(value: &Value, field: &str) -> Result<Vec<String>> {
     match value {
-        Value::Array(values) => values
-            .iter()
-            .enumerate()
-            .map(|(idx, value)| decimal_from_value(value, &format!("{field}[{idx}]")))
-            .collect(),
+        Value::Array(values) => {
+            if values.len() > MAX_COLLECTION_ITEMS {
+                return Err(Error::PublicInputCountMismatch(format!(
+                    "{field} count exceeds maximum {MAX_COLLECTION_ITEMS}"
+                )));
+            }
+            values
+                .iter()
+                .enumerate()
+                .map(|(idx, value)| decimal_from_value(value, &format!("{field}[{idx}]")))
+                .collect()
+        }
         Value::Object(map) => {
             for key in ["public_inputs", "public", "publicSignals"] {
                 if let Some(inner) = map.get(key) {
@@ -992,10 +1006,7 @@ fn decimal_from_value(value: &Value, field: &str) -> Result<String> {
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
-    let content = fs::read_to_string(path).map_err(|e| Error::Io {
-        source: e,
-        context: format!("failed to read file {}", path.display()),
-    })?;
+    let content = read_bounded_text(path)?;
     serde_json::from_str::<T>(&content).map_err(|e| Error::JsonParse {
         source: e,
         context: format!("invalid gnark json in file {}", path.display()),

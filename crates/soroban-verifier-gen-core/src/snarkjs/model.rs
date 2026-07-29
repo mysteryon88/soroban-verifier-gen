@@ -3,6 +3,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::str::FromStr;
 
+use crate::parser::MAX_DECIMAL_DIGITS;
+
 pub type DecimalValue = String;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -142,8 +144,16 @@ fn parse_scalar(value: &Value, field: &str) -> Result<String> {
 }
 
 pub fn parse_decimal(value: &str, field: &str) -> Result<num_bigint::BigUint> {
+    if value.is_empty()
+        || value.len() > MAX_DECIMAL_DIGITS
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(Error::DecimalParse(format!(
+            "{field} must be a decimal integer of at most {MAX_DECIMAL_DIGITS} digits"
+        )));
+    }
     num_bigint::BigUint::from_str(value)
-        .map_err(|_| Error::DecimalParse(format!("{field} must be decimal integer, got {value}")))
+        .map_err(|_| Error::DecimalParse(format!("{field} must be a decimal integer")))
 }
 
 #[derive(Debug, Deserialize)]
@@ -201,4 +211,15 @@ pub struct PackedArtifact {
     pub vk_gamma_g2: Option<String>,
     #[serde(rename = "vk_delta_g2", default)]
     pub vk_delta_g2: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_decimal;
+
+    #[test]
+    fn rejects_oversized_decimal_before_bigint_parsing() {
+        assert!(parse_decimal(&"9".repeat(257), "public input").is_err());
+        assert!(parse_decimal("123", "public input").is_ok());
+    }
 }

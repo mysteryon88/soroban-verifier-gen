@@ -93,6 +93,42 @@ pub struct Groth16VerifierInputs {
 }
 
 impl Groth16VerifierInputs {
+    pub(crate) fn validate_for_local_verification(&self, expected_curve: CurveKind) -> Result<()> {
+        if self.curve != expected_curve {
+            return Err(Error::CurveMismatch(format!(
+                "local verification adapter expects {}, got {}",
+                expected_curve.canonical_name(),
+                self.curve.canonical_name()
+            )));
+        }
+        if !self.protocol.eq_ignore_ascii_case("groth16") {
+            return Err(Error::UnsupportedProtocol(format!(
+                "local verification requires groth16, got {}",
+                self.protocol
+            )));
+        }
+        if self.proof.is_none() {
+            return Err(Error::MissingInput(
+                "local verification requires proof input".to_string(),
+            ));
+        }
+        let expected_ic = expected_ic_len(self.verifying_key.n_public)?;
+        if self.verifying_key.ic.len() != expected_ic {
+            return Err(Error::IcLengthMismatch(format!(
+                "expected {expected_ic} IC points, got {}",
+                self.verifying_key.ic.len()
+            )));
+        }
+        if self.public_inputs.len() != self.verifying_key.n_public {
+            return Err(Error::PublicInputCountMismatch(format!(
+                "verification key expects {} public inputs, got {}",
+                self.verifying_key.n_public,
+                self.public_inputs.len()
+            )));
+        }
+        Ok(())
+    }
+
     pub fn from_legacy(
         vk: LegacyVerificationKey,
         proof: LegacyProof,

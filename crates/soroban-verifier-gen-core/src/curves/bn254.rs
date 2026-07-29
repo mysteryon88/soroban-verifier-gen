@@ -50,6 +50,7 @@ impl CurveAdapter for Bn254Adapter {
     }
 
     fn local_verify(&self, inputs: &Groth16VerifierInputs) -> Result<bool> {
+        inputs.validate_for_local_verification(crate::model::CurveKind::Bn254)?;
         let vk = convert_vkey(&inputs.verifying_key)?;
         let proof = inputs.proof.as_ref().ok_or_else(|| {
             Error::MissingInput("local verification requires proof input".to_string())
