@@ -21,26 +21,26 @@ cargo run -p soroban-verifier-gen -- \
   --proof examples/ark-mimc/artifacts/bls12_381/proof.json \
   --out examples/generated/ark_mimc_bls12_381_snarkjs \
   --crate-name ark-mimc-bls12_381-snarkjs \
-  --contract-name ArkMimcBls12381SnarkJsVerifier
+  --contract-name ArkMimcBls12381SnarkJsVerifier --force
 
 cargo run -p soroban-verifier-gen -- \
   --vk examples/ark-mimc/artifacts/bn254/verification_key.json \
   --proof examples/ark-mimc/artifacts/bn254/proof.json \
   --out examples/generated/ark_mimc_bn254_snarkjs \
   --crate-name ark-mimc-bn254-snarkjs \
-  --contract-name ArkMimcBn254SnarkJsVerifier
+  --contract-name ArkMimcBn254SnarkJsVerifier --force
 
 cargo run -p soroban-verifier-gen -- \
   --bundle examples/ark-mimc/artifacts/bls12_381/groth16_artifacts.json \
   --out examples/generated/ark_mimc_bls12_381_arkworks \
   --crate-name ark-mimc-bls12_381-arkworks \
-  --contract-name ArkMimcBls12381ArkworksVerifier
+  --contract-name ArkMimcBls12381ArkworksVerifier --force
 
 cargo run -p soroban-verifier-gen -- \
   --bundle examples/ark-mimc/artifacts/bn254/groth16_artifacts.json \
   --out examples/generated/ark_mimc_bn254_arkworks \
   --crate-name ark-mimc-bn254-arkworks \
-  --contract-name ArkMimcBn254ArkworksVerifier
+  --contract-name ArkMimcBn254ArkworksVerifier --force
 
 cargo run -p soroban-verifier-gen -- \
   --vk examples/MulCircuit/artifacts/bls12_381/verification_key.json \
@@ -48,7 +48,7 @@ cargo run -p soroban-verifier-gen -- \
   --public examples/MulCircuit/artifacts/bls12_381/public.json \
   --out examples/generated/mul_circuit_bls12381_snarkjs \
   --crate-name mul-circuit-bls12381-snarkjs \
-  --contract-name MulCircuitBls12381SnarkJsVerifier
+  --contract-name MulCircuitBls12381SnarkJsVerifier --force
 
 cargo run -p soroban-verifier-gen -- \
   --vk examples/gnark-native/cubic/artifacts/bls12381/verification_key_gnark.json \
@@ -56,7 +56,7 @@ cargo run -p soroban-verifier-gen -- \
   --public examples/gnark-native/cubic/artifacts/bls12381/public.json \
   --out examples/generated/gnark_cubic_bls12_381_json \
   --crate-name gnark-cubic-bls12_381-json \
-  --contract-name GnarkCubicBls12381JsonVerifier
+  --contract-name GnarkCubicBls12381JsonVerifier --force
 
 cargo run -p soroban-verifier-gen -- \
   --vk examples/gnark-native/cubic/artifacts/bn254/verification_key_gnark.json \
@@ -64,7 +64,7 @@ cargo run -p soroban-verifier-gen -- \
   --public examples/gnark-native/cubic/artifacts/bn254/public.json \
   --out examples/generated/gnark_cubic_bn254_json \
   --crate-name gnark-cubic-bn254-json \
-  --contract-name GnarkCubicBn254JsonVerifier
+  --contract-name GnarkCubicBn254JsonVerifier --force
 
 cargo run -p soroban-verifier-gen -- \
   --vk examples/gnark-native/cubic/artifacts/bls12381/verification_key.bin \
@@ -72,7 +72,7 @@ cargo run -p soroban-verifier-gen -- \
   --public examples/gnark-native/cubic/artifacts/bls12381/public.json \
   --out examples/generated/gnark_cubic_bls12_381_bin \
   --crate-name gnark-cubic-bls12_381-bin \
-  --contract-name GnarkCubicBls12381BinVerifier
+  --contract-name GnarkCubicBls12381BinVerifier --force
 
 cargo run -p soroban-verifier-gen -- \
   --vk examples/gnark-native/cubic/artifacts/bn254/verification_key.bin \
@@ -80,28 +80,30 @@ cargo run -p soroban-verifier-gen -- \
   --public examples/gnark-native/cubic/artifacts/bn254/public.json \
   --out examples/generated/gnark_cubic_bn254_bin \
   --crate-name gnark-cubic-bn254-bin \
-  --contract-name GnarkCubicBn254BinVerifier
+  --contract-name GnarkCubicBn254BinVerifier --force
 
 cargo run -p soroban-verifier-gen -- \
   --vk examples/sp1-groth16/fibonacci/artifacts/groth16_vk_v5.bin \
   --proof examples/sp1-groth16/fibonacci/artifacts/fibonacci_proof.bin \
   --out examples/generated/sp1_fibonacci_groth16_v5 \
   --crate-name sp1-fibonacci-groth16-v5 \
-  --contract-name Sp1FibonacciGroth16V5Verifier
+  --contract-name Sp1FibonacciGroth16V5Verifier --force
 
 cargo run -p soroban-verifier-gen -- \
   --vk examples/sp1-groth16/fibonacci/artifacts/sp1_groth16_vk.bin \
   --proof examples/sp1-groth16/fibonacci/artifacts/fibonacci_sp1_6_proof.bin \
   --out examples/generated/sp1_fibonacci_groth16_sp1_6 \
   --crate-name sp1-fibonacci-groth16-sp1-6 \
-  --contract-name Sp1FibonacciGroth16Sp16Verifier
+  --contract-name Sp1FibonacciGroth16Sp16Verifier --force
 ```
 
 ## Notes
 
 - `--bundle` is used for compact Arkworks artifacts (`groth16_artifacts.json`); when the bundle includes proof/public inputs, generated contract tests embed them.
 - `--public` is required only for formats that include public inputs in a separate file.
-- `--curve` is optional and used only for explicit format disambiguation.
+- The curve is detected from the artifacts; conflicting metadata is rejected.
+- Existing output directories require `--force`.
+- Proofs are verified locally before generation unless `--skip-local-verify` is used.
 
 ## Stateful gatekeeper
 

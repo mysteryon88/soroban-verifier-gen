@@ -175,7 +175,7 @@ fn read_json(path: &Path) -> Result<Value> {
     })
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CurveChoice {
     Bn254,
     Bls12381,
@@ -191,15 +191,25 @@ impl CurveChoice {
 }
 
 fn parse_curve(value: Option<&str>, curve_hint: Option<&str>) -> Result<CurveChoice> {
-    let raw_curve = value.or(curve_hint).ok_or_else(|| {
-        Error::MissingInput("compact artifact requires curve metadata".to_string())
-    })?;
-    match normalize_curve_name(raw_curve).as_str() {
+    let parse = |raw_curve: &str| match normalize_curve_name(raw_curve).as_str() {
         "bn128" | "bn254" | "altbn128" => Ok(CurveChoice::Bn254),
         "bls12381" => Ok(CurveChoice::Bls12381),
         _ => Err(Error::UnsupportedCurve(format!(
             "unsupported curve in compact artifact: {raw_curve}"
         ))),
+    };
+    let metadata = value.map(parse).transpose()?;
+    let hint = curve_hint.map(parse).transpose()?;
+    match (metadata, hint) {
+        (Some(metadata), Some(hint)) if metadata != hint => Err(Error::CurveMismatch(format!(
+            "artifact curve {} conflicts with requested curve {}",
+            metadata.normalized_name(),
+            hint.normalized_name()
+        ))),
+        (Some(curve), _) | (_, Some(curve)) => Ok(curve),
+        (None, None) => Err(Error::MissingInput(
+            "compact artifact requires curve metadata".to_string(),
+        )),
     }
 }
 

@@ -9,6 +9,7 @@ pub mod snarkjs;
 pub mod verifier;
 
 use crate::curves::{CurveAdapter, create_adapter};
+use crate::error::Error as CoreError;
 use crate::formats::{
     load_arkworks_inputs, load_arkworks_inputs_auto, load_compact_bundle, load_gnark_binary_inputs,
     load_gnark_binary_inputs_auto, load_gnark_json_inputs,
@@ -17,8 +18,8 @@ use crate::formats::{
 use crate::model::{CurveKind, Groth16Proof, Groth16VerifierInputs, SourceFormat};
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
-    path::{Path, PathBuf},
+    env, fs,
+    path::{Component, Path, PathBuf},
 };
 use tempfile::{Builder as TempDirBuilder, TempDir};
 
@@ -79,6 +80,8 @@ pub struct GenerateOptions {
     pub contract_name: String,
     /// Elliptic curve to use (default: Bls12_381)
     pub curve: Curve,
+    /// Replace an existing output directory.
+    pub force: bool,
 }
 
 /// Configuration options for generating a Soroban verifier contract from preloaded artifacts.
@@ -91,6 +94,8 @@ pub struct GenerateInputsOptions {
     pub crate_name: String,
     /// Name of the contract struct in the generated code.
     pub contract_name: String,
+    /// Replace an existing output directory.
+    pub force: bool,
 }
 
 /// Generate a verifier contract from a snarkjs-style verification key.
@@ -110,6 +115,7 @@ pub fn generate_verifier_contract_to_dir(opts: GenerateOptions) -> Result<()> {
         out_dir: opts.out_dir,
         crate_name: opts.crate_name,
         contract_name: opts.contract_name,
+        force: opts.force,
     })
 }
 
@@ -121,7 +127,7 @@ pub fn load_verifier_inputs(
     bundle: Option<&Path>,
     curve_hint: Option<&str>,
 ) -> Result<Groth16VerifierInputs> {
-    match (bundle, vk) {
+    let inputs = match (bundle, vk) {
         (Some(_), Some(_)) => Err(anyhow!("use either --bundle or --vk, not both")),
         (Some(bundle), None) => {
             if proof.is_some() || public.is_some() {
@@ -132,7 +138,25 @@ pub fn load_verifier_inputs(
         }
         (None, Some(vk)) => load_inputs_auto(vk, proof, public, curve_hint),
         (None, None) => Err(anyhow!("--vk is required unless --bundle is used")),
+    }?;
+    ensure_curve_hint(&inputs, curve_hint)?;
+    Ok(inputs)
+}
+
+fn ensure_curve_hint(inputs: &Groth16VerifierInputs, curve_hint: Option<&str>) -> Result<()> {
+    let Some(curve_hint) = curve_hint else {
+        return Ok(());
+    };
+    let expected = CurveKind::from_name(curve_hint)?;
+    if inputs.curve != expected {
+        return Err(CoreError::CurveMismatch(format!(
+            "parsed curve {} conflicts with requested curve {}",
+            inputs.curve.canonical_name(),
+            expected.canonical_name()
+        ))
+        .into());
     }
+    Ok(())
 }
 
 fn load_inputs_auto(
@@ -618,6 +642,15 @@ pub fn generate_verifier_contract_from_inputs_with_sdk(
     opts: GenerateInputsOptions,
     sdk_version: SorobanSdkVersion,
 ) -> Result<()> {
+    validate_generated_names(&opts.crate_name, &opts.contract_name)?;
+    if opts.force {
+        validate_safe_force_output_dir(&opts.out_dir)?;
+    } else if opts.out_dir.exists() {
+        return Err(anyhow!(
+            "output directory {} already exists; use --force to replace it",
+            opts.out_dir.display()
+        ));
+    }
     let curve = Curve::from_curve_kind(&opts.inputs.curve);
     let adapter = create_adapter(opts.inputs.curve.canonical_name())?;
     let n_public = opts
@@ -711,6 +744,67 @@ pub fn generate_verifier_contract_from_inputs_with_sdk(
     Ok(())
 }
 
+fn validate_safe_force_output_dir(out_dir: &Path) -> Result<()> {
+    if out_dir
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(anyhow!(
+            "unsafe output directory {}: parent traversal is not allowed",
+            out_dir.display()
+        ));
+    }
+    if !out_dir.exists() {
+        return Ok(());
+    }
+
+    let target = out_dir.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize output directory {}",
+            out_dir.display()
+        )
+    })?;
+    let cwd = env::current_dir()
+        .context("failed to read current working directory")?
+        .canonicalize()
+        .context("failed to canonicalize current working directory")?;
+    if target.parent().is_none() || target == cwd || cwd.starts_with(&target) {
+        return Err(anyhow!(
+            "unsafe output directory {}: refusing to replace it",
+            target.display()
+        ));
+    }
+    Ok(())
+}
+
+/// Validate names before they are interpolated into Cargo.toml and Rust source.
+pub fn validate_generated_names(crate_name: &str, contract_name: &str) -> Result<()> {
+    let valid_start = |character: char| character == '_' || character.is_ascii_alphabetic();
+    let valid_identifier = |value: &str| {
+        let mut chars = value.chars();
+        chars.next().is_some_and(valid_start)
+            && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+    };
+    let valid_crate_name = {
+        let mut chars = crate_name.chars();
+        chars.next().is_some_and(valid_start)
+            && chars.all(|character| {
+                character == '-' || character == '_' || character.is_ascii_alphanumeric()
+            })
+    };
+    if !valid_crate_name {
+        return Err(anyhow!(
+            "invalid crate_name: expected [A-Za-z_][A-Za-z0-9_-]*"
+        ));
+    }
+    if !valid_identifier(contract_name) {
+        return Err(anyhow!(
+            "invalid contract_name: expected [A-Za-z_][A-Za-z0-9_]*"
+        ));
+    }
+    Ok(())
+}
+
 fn create_staging_directory(out_dir: &Path) -> Result<TempDir> {
     let parent = out_dir
         .parent()
@@ -782,6 +876,7 @@ mod tests {
         generate_verifier_contract_from_inputs_with_sdk, load_verifier_inputs,
         publish_staged_directory, render_contract_cargo_toml, render_contract_source,
     };
+    use crate::formats::load_arkworks_bundle;
     use crate::model::{
         CurveKind, Groth16G1Point, Groth16G2Point, Groth16VerificationKey, Groth16VerifierInputs,
         SourceFormat,
@@ -932,7 +1027,136 @@ mod tests {
             out_dir,
             crate_name: "verifier".to_string(),
             contract_name: "Verifier".to_string(),
+            force: true,
         })
+    }
+
+    fn fixture(parts: &[&str]) -> std::path::PathBuf {
+        let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("../..");
+        for part in parts {
+            path.push(part);
+        }
+        path
+    }
+
+    #[test]
+    fn public_generation_api_rejects_untrusted_names_before_writing() {
+        for (idx, crate_name, contract_name) in [
+            (0, "bad\n[dependencies]", "Verifier"),
+            (1, "verifier", "Bad {} impl Injected"),
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let out = temp.path().join(format!("invalid-name-{idx}"));
+            let err = generate_verifier_contract_from_inputs(GenerateInputsOptions {
+                inputs: bn254_inputs(1),
+                out_dir: out.clone(),
+                crate_name: crate_name.to_string(),
+                contract_name: contract_name.to_string(),
+                force: false,
+            })
+            .unwrap_err();
+
+            assert!(err.to_string().contains("invalid"));
+            assert!(!out.exists());
+        }
+    }
+
+    #[test]
+    fn compact_bundle_rejects_conflicting_curve_hint() {
+        let bundle = fixture(&[
+            "examples",
+            "ark-mimc",
+            "artifacts",
+            "bn254",
+            "groth16_artifacts.json",
+        ]);
+
+        let err =
+            load_verifier_inputs(None, None, None, Some(&bundle), Some("bls12381")).unwrap_err();
+
+        assert!(format!("{err:#}").contains("CURVE_MISMATCH"));
+    }
+
+    #[test]
+    fn arkworks_bundle_rejects_conflicting_curve_hint() {
+        let bundle = fixture(&[
+            "examples",
+            "ark-mimc",
+            "artifacts",
+            "bn254",
+            "groth16_artifacts.json",
+        ]);
+
+        let err = load_arkworks_bundle(&bundle, Some("bls12381")).unwrap_err();
+
+        assert!(err.to_string().contains("CURVE_MISMATCH"));
+    }
+
+    #[test]
+    fn sp1_fallback_rejects_conflicting_curve_hint() {
+        let vk = fixture(&[
+            "examples",
+            "sp1-groth16",
+            "fibonacci",
+            "artifacts",
+            "groth16_vk_v5.bin",
+        ]);
+        let proof = fixture(&[
+            "examples",
+            "sp1-groth16",
+            "fibonacci",
+            "artifacts",
+            "fibonacci_proof.bin",
+        ]);
+
+        let err = load_verifier_inputs(Some(&vk), Some(&proof), None, None, Some("bls12381"))
+            .unwrap_err();
+
+        assert!(err.to_string().contains("CURVE_MISMATCH"));
+    }
+
+    #[test]
+    fn generation_requires_force_to_replace_existing_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join("existing");
+        fs::create_dir(&out).unwrap();
+        fs::write(out.join("keep.txt"), "existing output").unwrap();
+
+        let err = generate_verifier_contract_from_inputs(GenerateInputsOptions {
+            inputs: bn254_inputs(1),
+            out_dir: out.clone(),
+            crate_name: "verifier".to_string(),
+            contract_name: "Verifier".to_string(),
+            force: false,
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("already exists"));
+        assert_eq!(
+            fs::read_to_string(out.join("keep.txt")).unwrap(),
+            "existing output"
+        );
+    }
+
+    #[test]
+    fn force_generation_rejects_parent_traversal_output() {
+        let temp = tempfile::tempdir().unwrap();
+        let child = temp.path().join("child");
+        fs::create_dir(&child).unwrap();
+        let out = child.join("..");
+
+        let err = generate_verifier_contract_from_inputs(GenerateInputsOptions {
+            inputs: bn254_inputs(1),
+            out_dir: out,
+            crate_name: "verifier".to_string(),
+            contract_name: "Verifier".to_string(),
+            force: true,
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("unsafe output"));
+        assert!(child.exists());
     }
 
     #[test]
@@ -1198,6 +1422,7 @@ mod tests {
                         out_dir: out.clone(),
                         crate_name: "verifier".to_string(),
                         contract_name: "Verifier".to_string(),
+                        force: true,
                     },
                     sdk,
                 )

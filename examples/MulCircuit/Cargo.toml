@@ -14,5 +14,5 @@ ark-relations = "0.6.0"
 ark-serialize = "0.6.0"
 ark-snark = "0.6.0"
 ark-snarkjs = "0.2.0"
-ark-std = "0.6.0"
+ark-std = { version = "0.6.0", features = ["getrandom"] }
 hex = "0.4.3"

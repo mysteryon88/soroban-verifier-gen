@@ -33,7 +33,10 @@ use ark_relations::gr1cs::{ConstraintSynthesizer, ConstraintSystemRef, Synthesis
 use ark_relations::gr1cs::{ConstraintSystem, SynthesisMode};
 use ark_serialize::CanonicalSerialize;
 use ark_snarkjs::{AsFp2, CurveTag, export_proof, export_vk};
-use ark_std::rand::{RngCore, SeedableRng};
+#[cfg(test)]
+use ark_std::rand::RngCore;
+use ark_std::rand::SeedableRng;
+#[cfg(test)]
 use ark_std::test_rng;
 
 const MIMC_ROUNDS: usize = 322;
@@ -153,7 +156,7 @@ where
 {
     use ark_groth16::Groth16;
 
-    let mut rng = ark_std::rand::rngs::StdRng::seed_from_u64(test_rng().next_u64());
+    let mut rng = ark_std::rand::rngs::StdRng::from_entropy();
     let mut constants = Vec::with_capacity(MIMC_ROUNDS);
     for _ in 0..MIMC_ROUNDS {
         constants.push(E::ScalarField::rand(&mut rng));

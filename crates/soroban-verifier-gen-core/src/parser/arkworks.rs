@@ -94,10 +94,19 @@ fn read_json_or_string(path: &Path) -> Result<Value> {
 }
 
 fn parse_curve(value: Option<&str>, curve_hint: Option<&str>) -> Result<CurveKind> {
-    let raw = value
-        .or(curve_hint)
-        .ok_or_else(|| Error::MissingInput("arkworks input requires curve metadata".to_string()))?;
-    CurveKind::from_name(raw)
+    let metadata = value.map(CurveKind::from_name).transpose()?;
+    let hint = curve_hint.map(CurveKind::from_name).transpose()?;
+    match (metadata, hint) {
+        (Some(metadata), Some(hint)) if metadata != hint => Err(Error::CurveMismatch(format!(
+            "artifact curve {} conflicts with requested curve {}",
+            metadata.canonical_name(),
+            hint.canonical_name()
+        ))),
+        (Some(curve), _) | (_, Some(curve)) => Ok(curve),
+        (None, None) => Err(Error::MissingInput(
+            "arkworks input requires curve metadata".to_string(),
+        )),
+    }
 }
 
 fn string_from_keys(value: &Value, keys: &[&str], field: &str) -> Result<String> {
