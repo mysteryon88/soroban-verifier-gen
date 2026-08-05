@@ -163,7 +163,7 @@ impl Verifier {
         BytesN::from_array(&env, &VK_FINGERPRINT)
     }
 
-    pub fn verify_proof_strict(
+    pub fn verify_proof(
         env: Env,
         proof: Proof,
         public_inputs: Vec<BytesN<32>>,
@@ -172,33 +172,29 @@ impl Verifier {
         for bytes in public_inputs.iter() {
             pub_signals.push_back(canonical_fr(&env, bytes)?);
         }
-        Self::verify_proof(env, proof, pub_signals)
+        verify_fr(env, proof, pub_signals)
+    }
+}
+
+fn verify_fr(env: Env, proof: Proof, pub_signals: Vec<Bn254Fr>) -> Result<bool, Groth16Error> {
+    let bn = env.crypto().bn254();
+    let vk = vk(&env);
+
+    if pub_signals.len() + 1 != vk.ic.len() {
+        return Err(Groth16Error::MalformedVerifyingKey);
     }
 
-    pub fn verify_proof(
-        env: Env,
-        proof: Proof,
-        pub_signals: Vec<Bn254Fr>,
-    ) -> Result<bool, Groth16Error> {
-        let bn = env.crypto().bn254();
-        let vk = vk(&env);
-
-        if pub_signals.len() + 1 != vk.ic.len() {
-            return Err(Groth16Error::MalformedVerifyingKey);
-        }
-
-        let mut vk_x = vk.ic.get(0).unwrap();
-        for (s, v) in pub_signals.iter().zip(vk.ic.iter().skip(1)) {
-            let prod = bn.g1_mul(&v, &s);
-            vk_x = bn.g1_add(&vk_x, &prod);
-        }
-
-        let neg_a = -proof.a;
-        let vp1 = soroban_sdk::vec![&env, neg_a, vk.alpha, vk_x, proof.c];
-        let vp2 = soroban_sdk::vec![&env, proof.b, vk.beta, vk.gamma, vk.delta];
-
-        Ok(bn.pairing_check(vp1, vp2))
+    let mut vk_x = vk.ic.get(0).unwrap();
+    for (s, v) in pub_signals.iter().zip(vk.ic.iter().skip(1)) {
+        let prod = bn.g1_mul(&v, &s);
+        vk_x = bn.g1_add(&vk_x, &prod);
     }
+
+    let neg_a = -proof.a;
+    let vp1 = soroban_sdk::vec![&env, neg_a, vk.alpha, vk_x, proof.c];
+    let vp2 = soroban_sdk::vec![&env, proof.b, vk.beta, vk.gamma, vk.delta];
+
+    Ok(bn.pairing_check(vp1, vp2))
 }
 
 #[contracterror]
@@ -253,7 +249,7 @@ impl Gatekeeper {
 
         let public_input = context_public_input(&env, &domain, &nullifier);
         let inputs = soroban_sdk::vec![&env, public_input];
-        let verified = Verifier::verify_proof_strict(env.clone(), proof, inputs)
+        let verified = Verifier::verify_proof(env.clone(), proof, inputs)
             .map_err(|_| GatekeeperError::InvalidProof)?;
         if !verified {
             return Err(GatekeeperError::InvalidProof);
@@ -313,13 +309,13 @@ mod test {
             b: Bn254G2Affine::from_array(&env, &VK_BETA),
             c: Bn254G1Affine::from_array(&env, &VK_ALPHA),
         };
-        let mut pub_signals = Vec::new(&env);
+        let mut public_inputs = Vec::new(&env);
         for _ in 0..VK_IC.len() {
-            pub_signals.push_back(Bn254Fr::from_bytes(BytesN::from_array(&env, &[0u8; 32])));
+            public_inputs.push_back(BytesN::from_array(&env, &[0u8; 32]));
         }
 
         assert_eq!(
-            Verifier::verify_proof(env, proof, pub_signals),
+            Verifier::verify_proof(env, proof, public_inputs),
             Err(Groth16Error::MalformedVerifyingKey)
         );
     }
@@ -380,12 +376,12 @@ mod test {
             b: Bn254G2Affine::from_array(&env, &TEST_PROOF_B),
             c: Bn254G1Affine::from_array(&env, &TEST_PROOF_C),
         };
-        let mut pub_signals = Vec::new(&env);
+        let mut public_inputs = Vec::new(&env);
         for input in TEST_PUBLIC_INPUTS.iter() {
-            pub_signals.push_back(Bn254Fr::from_bytes(BytesN::from_array(&env, input)));
+            public_inputs.push_back(BytesN::from_array(&env, input));
         }
 
-        assert_eq!(Verifier::verify_proof(env, proof, pub_signals), Ok(true));
+        assert_eq!(Verifier::verify_proof(env, proof, public_inputs), Ok(true));
     }
 
     fn proof(env: &Env) -> Proof {

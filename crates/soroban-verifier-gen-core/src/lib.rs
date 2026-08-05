@@ -486,53 +486,51 @@ fn render_contract_source(
     s.push_str("        BytesN::from_array(&env, &VK_FINGERPRINT)\n");
     s.push_str("    }\n\n");
     s.push_str(
-        "    pub fn verify_proof_strict(env: Env, proof: Proof, public_inputs: Vec<BytesN<32>>) -> Result<bool, Groth16Error> {\n",
+        "    pub fn verify_proof(env: Env, proof: Proof, public_inputs: Vec<BytesN<32>>) -> Result<bool, Groth16Error> {\n",
     );
     s.push_str("        let mut pub_signals = Vec::new(&env);\n");
     s.push_str("        for bytes in public_inputs.iter() {\n");
     s.push_str("            pub_signals.push_back(canonical_fr(&env, bytes)?);\n");
     s.push_str("        }\n");
-    s.push_str("        Self::verify_proof(env, proof, pub_signals)\n");
-    s.push_str("    }\n\n");
+    s.push_str("        verify_fr(env, proof, pub_signals)\n");
+    s.push_str("    }\n");
+    s.push_str("}\n\n");
     s.push_str(&format!(
-        "    pub fn verify_proof(env: Env, proof: Proof, pub_signals: Vec<{}>) -> Result<bool, Groth16Error> {{\n",
+        "fn verify_fr(env: Env, proof: Proof, pub_signals: Vec<{}>) -> Result<bool, Groth16Error> {{\n",
         fr_type
     ));
 
     match curve {
-        Curve::Bls12_381 => s.push_str("        let bls = env.crypto().bls12_381();\n"),
-        Curve::Bn254 => s.push_str("        let bn = env.crypto().bn254();\n"),
+        Curve::Bls12_381 => s.push_str("    let bls = env.crypto().bls12_381();\n"),
+        Curve::Bn254 => s.push_str("    let bn = env.crypto().bn254();\n"),
     }
 
-    s.push_str("        let vk = vk(&env);\n\n");
-    s.push_str("        if pub_signals.len() + 1 != vk.ic.len() {\n");
-    s.push_str("            return Err(Groth16Error::MalformedVerifyingKey);\n");
-    s.push_str("        }\n\n");
-    s.push_str("        let mut vk_x = vk.ic.get(0).unwrap();\n");
-    s.push_str("        for (s, v) in pub_signals.iter().zip(vk.ic.iter().skip(1)) {\n");
+    s.push_str("    let vk = vk(&env);\n\n");
+    s.push_str("    if pub_signals.len() + 1 != vk.ic.len() {\n");
+    s.push_str("        return Err(Groth16Error::MalformedVerifyingKey);\n");
+    s.push_str("    }\n\n");
+    s.push_str("    let mut vk_x = vk.ic.get(0).unwrap();\n");
+    s.push_str("    for (s, v) in pub_signals.iter().zip(vk.ic.iter().skip(1)) {\n");
     match curve {
         Curve::Bls12_381 => {
-            s.push_str("            let prod = bls.g1_mul(&v, &s);\n");
-            s.push_str("            vk_x = bls.g1_add(&vk_x, &prod);\n");
+            s.push_str("        let prod = bls.g1_mul(&v, &s);\n");
+            s.push_str("        vk_x = bls.g1_add(&vk_x, &prod);\n");
         }
         Curve::Bn254 => {
-            s.push_str("            let prod = bn.g1_mul(&v, &s);\n");
-            s.push_str("            vk_x = bn.g1_add(&vk_x, &prod);\n");
+            s.push_str("        let prod = bn.g1_mul(&v, &s);\n");
+            s.push_str("        vk_x = bn.g1_add(&vk_x, &prod);\n");
         }
     }
-    s.push_str("        }\n\n");
-    s.push_str("        let neg_a = -proof.a;\n");
-    s.push_str("        let vp1 = soroban_sdk::vec![&env, neg_a, vk.alpha, vk_x, proof.c];\n");
-    s.push_str(
-        "        let vp2 = soroban_sdk::vec![&env, proof.b, vk.beta, vk.gamma, vk.delta];\n\n",
-    );
+    s.push_str("    }\n\n");
+    s.push_str("    let neg_a = -proof.a;\n");
+    s.push_str("    let vp1 = soroban_sdk::vec![&env, neg_a, vk.alpha, vk_x, proof.c];\n");
+    s.push_str("    let vp2 = soroban_sdk::vec![&env, proof.b, vk.beta, vk.gamma, vk.delta];\n\n");
 
     match curve {
-        Curve::Bls12_381 => s.push_str("        Ok(bls.pairing_check(vp1, vp2))\n"),
-        Curve::Bn254 => s.push_str("        Ok(bn.pairing_check(vp1, vp2))\n"),
+        Curve::Bls12_381 => s.push_str("    Ok(bls.pairing_check(vp1, vp2))\n"),
+        Curve::Bn254 => s.push_str("    Ok(bn.pairing_check(vp1, vp2))\n"),
     }
 
-    s.push_str("    }\n");
     s.push_str("}\n");
     s.push_str("\n#[cfg(test)]\n");
     s.push_str("mod test {\n");
@@ -545,15 +543,12 @@ fn render_contract_source(
         "        let proof = Proof {{ a: {}::from_array(&env, &VK_ALPHA), b: {}::from_array(&env, &VK_BETA), c: {}::from_array(&env, &VK_ALPHA) }};\n",
         g1_type, g2_type, g1_type
     ));
-    s.push_str("        let mut pub_signals = Vec::new(&env);\n");
+    s.push_str("        let mut public_inputs = Vec::new(&env);\n");
     s.push_str("        for _ in 0..VK_IC.len() {\n");
-    s.push_str(&format!(
-        "            pub_signals.push_back({}::from_bytes(BytesN::from_array(&env, &[0u8; 32])));\n",
-        fr_type
-    ));
+    s.push_str("            public_inputs.push_back(BytesN::from_array(&env, &[0u8; 32]));\n");
     s.push_str("        }\n\n");
     s.push_str(&format!(
-        "        assert_eq!({}::verify_proof(env, proof, pub_signals), Err(Groth16Error::MalformedVerifyingKey));\n",
+        "        assert_eq!({}::verify_proof(env, proof, public_inputs), Err(Groth16Error::MalformedVerifyingKey));\n",
         contract_name
     ));
     s.push_str("    }\n");
@@ -573,15 +568,12 @@ fn render_contract_source(
             "        let proof = Proof {{ a: {}::from_array(&env, &TEST_PROOF_A), b: {}::from_array(&env, &TEST_PROOF_B), c: {}::from_array(&env, &TEST_PROOF_C) }};\n",
             g1_type, g2_type, g1_type
         ));
-        s.push_str("        let mut pub_signals = Vec::new(&env);\n");
+        s.push_str("        let mut public_inputs = Vec::new(&env);\n");
         s.push_str("        for input in TEST_PUBLIC_INPUTS.iter() {\n");
-        s.push_str(&format!(
-            "            pub_signals.push_back({}::from_bytes(BytesN::from_array(&env, input)));\n",
-            fr_type
-        ));
+        s.push_str("            public_inputs.push_back(BytesN::from_array(&env, input));\n");
         s.push_str("        }\n\n");
         s.push_str(&format!(
-            "        assert_eq!({}::verify_proof(env, proof, pub_signals), Ok(true));\n",
+            "        assert_eq!({}::verify_proof(env, proof, public_inputs), Ok(true));\n",
             contract_name
         ));
         s.push_str("    }\n");
@@ -1252,8 +1244,9 @@ mod tests {
         assert!(source.contains("const TEST_PUBLIC_INPUTS"));
         assert!(source.contains("fn verifies_embedded_test_vectors()"));
         assert!(
-            source
-                .contains("assert_eq!(Verifier::verify_proof(env, proof, pub_signals), Ok(true));")
+            source.contains(
+                "assert_eq!(Verifier::verify_proof(env, proof, public_inputs), Ok(true));"
+            )
         );
     }
 
@@ -1389,13 +1382,18 @@ mod tests {
     }
 
     #[test]
-    fn generated_contract_has_strict_public_input_api_and_vk_fingerprint() {
+    fn generated_contract_has_one_canonical_public_input_api_and_vk_fingerprint() {
         let temp = tempfile::tempdir().unwrap();
         let out = temp.path().join("verifier");
         generate_bn254(bn254_inputs(1), out.clone()).unwrap();
 
         let source = fs::read_to_string(out.join("src/lib.rs")).unwrap();
-        assert!(source.contains("pub fn verify_proof_strict"));
+        assert!(source.contains(
+            "pub fn verify_proof(env: Env, proof: Proof, public_inputs: Vec<BytesN<32>>"
+        ));
+        assert!(source.contains("fn verify_fr"));
+        assert!(!source.contains("pub fn verify_fr"));
+        assert!(!source.contains("pub fn verify_proof_strict"));
         assert!(source.contains("NonCanonicalPublicInput"));
         assert!(source.contains("VK_FINGERPRINT"));
         assert!(source.contains("pub fn vk_fingerprint"));

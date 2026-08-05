@@ -2,7 +2,7 @@
 
 This example keeps the generated `Verifier` stateless and adds a separate `Gatekeeper` contract that owns replay state.
 
-`Gatekeeper::authorize` length-prefixes and hashes the domain, nullifier, generated VK fingerprint, current Soroban contract address, network identifier, and operation into the circuit's sole public input. It calls `verify_proof_strict`, then stores `DataKey::Used(canonical_nullifier)` in persistent storage only after the real BN254 proof succeeds. The example extends the entry TTL to 241,920 ledgers whenever its remaining TTL is below 120,960 ledgers; production deployments should select values that match their network retention policy.
+`Gatekeeper::authorize` length-prefixes and hashes the domain, nullifier, generated VK fingerprint, current Soroban contract address, network identifier, and operation into the circuit's sole public input. It calls `verify_proof`, then stores `DataKey::Used(canonical_nullifier)` in persistent storage only after the real BN254 proof succeeds. The example extends the entry TTL to 241,920 ledgers whenever its remaining TTL is below 120,960 ledgers; production deployments should select values that match their network retention policy.
 
 The fixed `CONTEXT_MASK` is a 248-bit output encoding chosen so the example can reuse the repository's existing proof fixture while always producing a canonical BN254 scalar. The first byte is fixed and the remaining 31 bytes are `SHA-256(context) XOR mask`. A production circuit may prove an unmasked hash-to-field value directly.
 
