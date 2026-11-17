@@ -84,3 +84,22 @@ MIT.
 - [Gnark](https://github.com/Consensys/gnark)
 - [SP1](https://github.com/succinctlabs/sp1)
 - [Arkworks](https://github.com/arkworks-rs)
+
+
+## Output directory safety
+
+Generation rejects `..` before creating any parent and refuses filesystem roots, the current directory and its ancestors. Every existing path component must be a real directory, without symlinks or Windows reparse points. Windows output currently requires a local drive path; UNC/device paths are unsupported.
+
+Output is written through retained directory handles into exclusive, private staging (Linux mode `0700`; Windows protected, inheritable owner/SYSTEM DACL). Files are created exclusively. Publication, force backup, rollback and cleanup use native operations relative to retained handles. Linux requires `renameat2(RENAME_NOREPLACE)`; Windows uses a held source handle and `FILE_RENAME_INFORMATION` with `ReplaceIfExists = FALSE`. Existing destinations, including raced empty directories, files and symlinks, are never replaced without force. An unsupported filesystem fails safely instead of falling back to a replacing rename. WSL DrvFS does not provide the required rename operation on the tested host; use a native Linux filesystem such as ext4 or run the Windows generator. Parsing remains available on other platforms, where generation returns `Unsupported`.
+
+Force compares the target and actual backup against held cwd/ancestor directory identities, including alternate path spellings and aliases. It validates the actual directory moved to backup. A failed commit restores it only if the destination is still absent. If a concurrent destination prevents rollback, both it and the backup survive and the error reports the recovery location. Failed transactions retain staging for inspection; paths in errors are the last known locations and can become stale if an ancestor was renamed. Successful cleanup remains handle-relative and refuses unexpected symlinks or uncertain directory identities.
+
+## Public scalar encodings
+
+Arkworks and compact public inputs use the same grammar in JSON strings and raw scalar files: unprefixed digits are decimal at every length, `0x`/`0X` is a numeric big-endian hexadecimal integer, and `le:` followed by exactly 64 hex characters is one serialized 32-byte little-endian scalar. Bare 64-character hex containing `a-f` remains accepted for legacy byte artifacts; use `le:` for new serialized inputs so digit-only bytes cannot change meaning. Values must still fit the selected curve's scalar field.
+
+The Arkworks MiMC producer writes the explicit `le:` marker in both `groth16_artifacts.json` and `public_input.hex`; VK/proof `.hex` files remain ordinary byte hex. JSON collection and aggregate structural limits are checked before allocating artifact trees, so oversized collections now fail at the JSON boundary.
+
+SP1 wrapper loading rejects an explicitly supplied `--public` file; it never silently substitutes the wrapper statement for that file.
+
+On Linux, each traversed parent must be owned by the effective UID or root and must have no group/other write permission unless sticky. Newly created directories must be effective-UID-owned and private. Untrusted owners and writable nonsticky traversal parents are rejected with `Unsupported`; this can reject WSL DrvFS before publication is attempted. This boundary excludes same-UID and privileged attackers. Parent trust is checked before opening each next component and before every directory creation; an unexpected newly opened object is preserved, without chmod/chown or deletion.

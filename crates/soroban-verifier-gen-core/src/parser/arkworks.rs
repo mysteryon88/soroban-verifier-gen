@@ -2,7 +2,6 @@ use ark_bls12_381::{Bls12_381, G1Affine as BlsG1Affine, G2Affine as BlsG2Affine}
 use ark_bn254::{Bn254, G1Affine as Bn254G1Affine, G2Affine as Bn254G2Affine};
 use ark_groth16::{Proof as ArkProof, VerifyingKey as ArkVerifyingKey};
 use ark_serialize::CanonicalDeserialize;
-use num_bigint::BigUint;
 use serde_json::Value;
 use std::io::Cursor;
 use std::path::Path;
@@ -13,8 +12,8 @@ use crate::model::{
     Groth16VerifierInputs, SourceFormat,
 };
 use crate::parser::{
-    MAX_COLLECTION_ITEMS, MAX_DECIMAL_DIGITS, decode_hex, read_bounded_text,
-    validate_arkworks_proof_bytes, validate_arkworks_vk_bytes,
+    MAX_COLLECTION_ITEMS, decode_hex, read_bounded_text, validate_arkworks_proof_bytes,
+    validate_arkworks_vk_bytes,
 };
 use crate::snarkjs::parse_decimal;
 
@@ -87,10 +86,32 @@ pub fn load_arkworks_inputs(
 fn read_json_or_string(path: &Path) -> Result<Value> {
     let content = read_bounded_text(path)?;
     let trimmed = content.trim();
-    match serde_json::from_str::<Value>(trimmed) {
-        Ok(value) => Ok(value),
-        Err(_) => Ok(Value::String(trimmed.to_string())),
+    // Preserve decimal precision before serde_json can convert large numbers to f64.
+    if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(Value::String(trimmed.to_string()));
     }
+    if trimmed.starts_with(['{', '[', '\"'])
+        || trimmed == "null"
+        || trimmed == "true"
+        || trimmed == "false"
+    {
+        return crate::parser::bounded_json(trimmed).map_err(|source| Error::JsonParse {
+            source,
+            context: format!("invalid JSON in {}", path.display()),
+        });
+    }
+    // Byte alignment belongs to VK/proof decoding; raw public scalars also allow odd numeric hex.
+    let raw = trimmed
+        .strip_prefix("le:")
+        .or_else(|| trimmed.strip_prefix("0x"))
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    if raw.is_empty() || !raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::HexParse(
+            "raw Arkworks input must be hex or an explicit LE scalar".to_string(),
+        ));
+    }
+    Ok(Value::String(trimmed.to_string()))
 }
 
 fn parse_curve(value: Option<&str>, curve_hint: Option<&str>) -> Result<CurveKind> {
@@ -308,47 +329,85 @@ fn parse_public_input_value(value: &Value, field_name: &str) -> Result<String> {
 }
 
 fn parse_public_input_string(raw: &str, field_name: &str) -> Result<String> {
-    let trimmed = raw.trim();
-    let without_prefix = trimmed
-        .strip_prefix("0x")
-        .or_else(|| trimmed.strip_prefix("0X"))
-        .unwrap_or(trimmed);
-
-    if without_prefix.len() >= 64
-        && without_prefix.len().is_multiple_of(64)
-        && without_prefix.chars().all(|c| c.is_ascii_hexdigit())
-    {
-        let bytes = decode_hex(without_prefix, field_name)?;
-        if bytes.len() == 32 {
-            return Ok(BigUint::from_bytes_le(&bytes).to_string());
-        }
-        return Err(Error::MissingInput(format!(
-            "{field_name} contains multiple public inputs; use an array or public_inputs field"
-        )));
-    }
-
-    parse_scalar(trimmed, field_name)
+    crate::snarkjs::parser::parse_compact_scalar(raw.trim(), field_name)
 }
 
-fn parse_scalar(raw: &str, field_name: &str) -> Result<String> {
-    let has_hex_prefix = raw.starts_with("0x") || raw.starts_with("0X");
-    let value = if has_hex_prefix { &raw[2..] } else { raw };
-    if value.chars().all(|c| c.is_ascii_digit()) {
-        parse_decimal(value, field_name)?;
-        return Ok(value.to_string());
-    }
-    if value.chars().all(|c| c.is_ascii_hexdigit()) {
-        if value.len() > MAX_DECIMAL_DIGITS {
-            return Err(Error::DecimalParse(format!(
-                "{field_name} exceeds the maximum scalar length"
-            )));
+#[cfg(test)]
+mod scalar_regressions {
+    use super::*;
+    #[test]
+    fn scalar_grammar_is_unambiguous() {
+        let decimal = "1".repeat(64);
+        assert_eq!(
+            parse_public_input_string(&decimal, "public").unwrap(),
+            decimal
+        );
+        assert_eq!(parse_public_input_string("0x10", "public").unwrap(), "16");
+        assert_eq!(
+            parse_public_input_string(&format!("0X{}10", "0".repeat(62)), "public").unwrap(),
+            "16"
+        );
+        assert_eq!(
+            parse_public_input_string(&format!("le:01{}", "0".repeat(62)), "public").unwrap(),
+            "1"
+        );
+        for bad in ["", "le:01", "le:zz", "dead", "0x", "0xgg"] {
+            assert!(parse_public_input_string(bad, "public").is_err(), "{bad}");
         }
-        let parsed = BigUint::parse_bytes(value.as_bytes(), 16).ok_or_else(|| {
-            Error::DecimalParse(format!("{field_name} could not parse hex scalar"))
-        })?;
-        return Ok(parsed.to_string());
     }
-    Err(Error::DecimalParse(format!(
-        "{field_name} must be decimal or hex string"
-    )))
+    #[test]
+    fn scalar_grammar_reaches_both_curves_and_bundle_routes() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let dir = tempfile::tempdir().unwrap();
+        for curve in ["bn254", "bls12_381"] {
+            let source = root
+                .join("examples/ark-mimc/artifacts")
+                .join(curve)
+                .join("groth16_artifacts.json");
+            let mut bundle: Value =
+                serde_json::from_str(&std::fs::read_to_string(source).unwrap()).unwrap();
+            bundle.as_object_mut().unwrap().remove("proof");
+            let path = dir.path().join("bundle.json");
+            for (raw, expected) in [
+                ("1".repeat(64), "1".repeat(64)),
+                ("0x10".into(), "16".into()),
+                (format!("0X{}10", "0".repeat(62)), "16".into()),
+                (format!("le:01{}", "0".repeat(62)), "1".into()),
+            ] {
+                bundle["public_input"] = raw.into();
+                std::fs::write(&path, bundle.to_string()).unwrap();
+                assert_eq!(
+                    load_arkworks_bundle(&path, None).unwrap().public_inputs,
+                    vec![expected.clone()]
+                );
+                assert_eq!(
+                    crate::formats::load_compact_bundle(&path, None)
+                        .unwrap()
+                        .public_inputs,
+                    vec![expected]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn raw_scalar_text_and_json_structures_remain_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("input");
+        std::fs::write(&path, "123").unwrap();
+        assert_eq!(
+            read_json_or_string(&path).unwrap(),
+            serde_json::json!("123")
+        );
+        std::fs::write(&path, "deadbeef").unwrap();
+        assert_eq!(
+            read_json_or_string(&path).unwrap(),
+            serde_json::json!("deadbeef")
+        );
+        std::fs::write(&path, "{\"broken\":[").unwrap();
+        assert!(matches!(
+            read_json_or_string(&path),
+            Err(Error::JsonParse { .. })
+        ));
+    }
 }

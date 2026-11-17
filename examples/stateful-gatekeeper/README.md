@@ -15,3 +15,5 @@ cargo test --manifest-path examples/stateful-gatekeeper/Cargo.toml
 ```
 
 The generated `verifier-manifest.json` records the canonical VK fingerprint used by the context commitment. The fingerprint proves integrity, not the honesty of the trusted setup.
+
+Persistent replay markers survive TTL expiry through state archival. An archived persistent key cannot be recreated: the transaction must restore it or fail, and restoration retains the stored used marker. TTL affects availability and restoration cost, not proof validity. Do not replace persistent replay storage with temporary storage. See the [protocol's persistent-storage invariants](https://github.com/stellar/stellar-protocol/blob/master/core/cap-0046-12.md).

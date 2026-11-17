@@ -1,3 +1,4 @@
+mod output;
 use anyhow::{Context, Result, anyhow};
 pub mod bytes;
 pub mod curves;
@@ -17,11 +18,7 @@ use crate::formats::{
 };
 use crate::model::{CurveKind, Groth16Proof, Groth16VerifierInputs, SourceFormat};
 use sha2::{Digest, Sha256};
-use std::{
-    env, fs,
-    path::{Component, Path, PathBuf},
-};
-use tempfile::{Builder as TempDirBuilder, TempDir};
+use std::path::{Path, PathBuf};
 
 /// Elliptic curve selection for the verifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,6 +185,9 @@ fn load_inputs_auto(
         if let Some(proof) = proof
             && let Ok(inputs) = load_sp1_groth16_inputs(vk, proof)
         {
+            if public.is_some() {
+                return Err(anyhow!("SP1 does not accept an explicit public input file"));
+            }
             return Ok(inputs);
         }
 
@@ -220,6 +220,9 @@ fn load_inputs_auto(
     if let Some(proof) = proof
         && let Ok(inputs) = load_sp1_groth16_inputs(vk, proof)
     {
+        if public.is_some() {
+            return Err(anyhow!("SP1 does not accept an explicit public input file"));
+        }
         return Ok(inputs);
     }
 
@@ -635,14 +638,8 @@ pub fn generate_verifier_contract_from_inputs_with_sdk(
     sdk_version: SorobanSdkVersion,
 ) -> Result<()> {
     validate_generated_names(&opts.crate_name, &opts.contract_name)?;
-    if opts.force {
-        validate_safe_force_output_dir(&opts.out_dir)?;
-    } else if opts.out_dir.exists() {
-        return Err(anyhow!(
-            "output directory {} already exists; use --force to replace it",
-            opts.out_dir.display()
-        ));
-    }
+    output::validate_path(&opts.out_dir)?;
+    output::Output::check_existing(&opts.out_dir, opts.force, |dir| dir.validate_tree())?;
     let curve = Curve::from_curve_kind(&opts.inputs.curve);
     let adapter = create_adapter(opts.inputs.curve.canonical_name())?;
     let n_public = opts
@@ -724,48 +721,11 @@ pub fn generate_verifier_contract_from_inputs_with_sdk(
     }))
     .context("failed to render verifier manifest")?;
 
-    let staging = create_staging_directory(&opts.out_dir)?;
-    let staged_out = staging.path().join("output");
-    write_file(&staged_out.join("Cargo.toml"), &cargo_toml)?;
-    write_file(&staged_out.join("src").join("lib.rs"), &lib_rs)?;
-    write_file(
-        &staged_out.join("verifier-manifest.json"),
-        &format!("{manifest}\n"),
-    )?;
-    publish_staged_directory(staging, &staged_out, &opts.out_dir)?;
-    Ok(())
-}
-
-fn validate_safe_force_output_dir(out_dir: &Path) -> Result<()> {
-    if out_dir
-        .components()
-        .any(|component| matches!(component, Component::ParentDir))
-    {
-        return Err(anyhow!(
-            "unsafe output directory {}: parent traversal is not allowed",
-            out_dir.display()
-        ));
-    }
-    if !out_dir.exists() {
-        return Ok(());
-    }
-
-    let target = out_dir.canonicalize().with_context(|| {
-        format!(
-            "failed to canonicalize output directory {}",
-            out_dir.display()
-        )
-    })?;
-    let cwd = env::current_dir()
-        .context("failed to read current working directory")?
-        .canonicalize()
-        .context("failed to canonicalize current working directory")?;
-    if target.parent().is_none() || target == cwd || cwd.starts_with(&target) {
-        return Err(anyhow!(
-            "unsafe output directory {}: refusing to replace it",
-            target.display()
-        ));
-    }
+    let output = output::Output::new(&opts.out_dir)?;
+    output.write("Cargo.toml", cargo_toml.as_bytes())?;
+    output.write("src/lib.rs", lib_rs.as_bytes())?;
+    output.write("verifier-manifest.json", format!("{manifest}\n").as_bytes())?;
+    output.publish(opts.force, |dir| dir.validate_tree())?;
     Ok(())
 }
 
@@ -797,76 +757,12 @@ pub fn validate_generated_names(crate_name: &str, contract_name: &str) -> Result
     Ok(())
 }
 
-fn create_staging_directory(out_dir: &Path) -> Result<TempDir> {
-    let parent = out_dir
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create output parent {}", parent.display()))?;
-    TempDirBuilder::new()
-        .prefix(".soroban-verifier-gen-")
-        .tempdir_in(parent)
-        .with_context(|| format!("failed to create staging directory in {}", parent.display()))
-}
-
-fn publish_staged_directory(staging: TempDir, staged_out: &Path, out_dir: &Path) -> Result<()> {
-    let backup = staging.path().join("previous-output");
-    let had_existing = out_dir.exists();
-    if had_existing {
-        fs::rename(out_dir, &backup)
-            .with_context(|| format!("failed to stage existing output {}", out_dir.display()))?;
-    }
-
-    if let Err(publish_error) = fs::rename(staged_out, out_dir) {
-        if had_existing {
-            return restore_previous_output_or_preserve(staging, &backup, out_dir, publish_error);
-        }
-        return Err(publish_error)
-            .with_context(|| format!("failed to publish generated output {}", out_dir.display()));
-    }
-    Ok(())
-}
-
-fn restore_previous_output_or_preserve(
-    staging: TempDir,
-    backup: &Path,
-    out_dir: &Path,
-    publish_error: std::io::Error,
-) -> Result<()> {
-    match fs::rename(backup, out_dir) {
-        Ok(()) => Err(publish_error)
-            .with_context(|| format!("failed to publish generated output {}", out_dir.display())),
-        Err(rollback_error) => {
-            let preserved = staging.keep().join("previous-output");
-            Err(rollback_error).with_context(|| {
-                format!(
-                    "failed to restore {} after publish failed ({publish_error}); previous output preserved at {}",
-                    out_dir.display(),
-                    preserved.display()
-                )
-            })
-        }
-    }
-}
-
-fn write_file(path: &Path, contents: &str) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create directory {}", path.display()))?;
-    }
-    fs::write(path, contents)
-        .with_context(|| format!("failed to write file {}", path.display()))?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         Curve, EmbeddedTestVectors, GenerateInputsOptions, SorobanSdkVersion,
-        create_staging_directory, generate_verifier_contract_from_inputs,
-        generate_verifier_contract_from_inputs_with_sdk, load_verifier_inputs,
-        publish_staged_directory, render_contract_cargo_toml, render_contract_source,
+        generate_verifier_contract_from_inputs, generate_verifier_contract_from_inputs_with_sdk,
+        load_verifier_inputs, render_contract_cargo_toml, render_contract_source,
     };
     use crate::formats::load_arkworks_bundle;
     use crate::model::{
@@ -880,49 +776,6 @@ mod tests {
     use ark_ec::AffineRepr;
     use ark_ff::{Field, One, PrimeField, Zero};
     use std::{fs, panic::AssertUnwindSafe, process::Command};
-
-    #[test]
-    fn failed_publish_restores_existing_output() {
-        let parent = tempfile::tempdir().unwrap();
-        let out = parent.path().join("generated");
-        fs::create_dir(&out).unwrap();
-        fs::write(out.join("keep.txt"), "existing output").unwrap();
-        let staging = create_staging_directory(&out).unwrap();
-        let missing_staged_output = staging.path().join("missing");
-
-        assert!(publish_staged_directory(staging, &missing_staged_output, &out).is_err());
-        assert_eq!(
-            fs::read_to_string(out.join("keep.txt")).unwrap(),
-            "existing output"
-        );
-    }
-
-    #[test]
-    fn failed_rollback_preserves_backup_on_disk() {
-        let parent = tempfile::tempdir().unwrap();
-        let out = parent.path().join("generated");
-        fs::create_dir(&out).unwrap();
-        fs::write(out.join("occupied.txt"), "concurrent output").unwrap();
-        let staging = create_staging_directory(&out).unwrap();
-        let staging_path = staging.path().to_path_buf();
-        let backup = staging.path().join("previous-output");
-        fs::create_dir(&backup).unwrap();
-        fs::write(backup.join("keep.txt"), "existing output").unwrap();
-
-        let err = super::restore_previous_output_or_preserve(
-            staging,
-            &backup,
-            &out,
-            std::io::Error::other("publish failed"),
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("previous output preserved"));
-        assert_eq!(
-            fs::read_to_string(staging_path.join("previous-output/keep.txt")).unwrap(),
-            "existing output"
-        );
-        fs::remove_dir_all(staging_path).unwrap();
-    }
 
     fn bn254_g1(z: u64) -> Groth16G1Point {
         let affine = G1Affine::generator();
@@ -1083,6 +936,33 @@ mod tests {
         let err = load_arkworks_bundle(&bundle, Some("bls12381")).unwrap_err();
 
         assert!(err.to_string().contains("CURVE_MISMATCH"));
+    }
+
+    #[test]
+    fn sp1_fallback_rejects_explicit_public_inputs() {
+        let vk = fixture(&[
+            "examples",
+            "sp1-groth16",
+            "fibonacci",
+            "artifacts",
+            "groth16_vk_v5.bin",
+        ]);
+        let proof = fixture(&[
+            "examples",
+            "sp1-groth16",
+            "fibonacci",
+            "artifacts",
+            "fibonacci_proof.bin",
+        ]);
+        let temp = tempfile::tempdir().unwrap();
+        let public = temp.path().join("public.json");
+        fs::write(&public, "[\"999\"]").unwrap();
+        for hint in [None, Some("bn254")] {
+            assert!(
+                load_verifier_inputs(Some(&vk), Some(&proof), Some(&public), None, hint).is_err()
+            );
+            assert!(load_verifier_inputs(Some(&vk), Some(&proof), None, None, hint).is_ok());
+        }
     }
 
     #[test]
@@ -1429,7 +1309,15 @@ mod tests {
                 let output = Command::new(env!("CARGO"))
                     .args(["test", "--all-targets"])
                     .current_dir(&out)
-                    .env("CARGO_TARGET_DIR", temp.path().join("target"))
+                    .env(
+                        "CARGO_TARGET_DIR",
+                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                            .parent()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .join(".tmp/sdk-target"),
+                    )
                     .output()
                     .unwrap();
                 assert!(

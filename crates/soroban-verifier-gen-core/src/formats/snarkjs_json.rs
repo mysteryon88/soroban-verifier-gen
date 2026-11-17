@@ -104,7 +104,7 @@ fn apply_curve_hint(
 fn load_public_signals_from_proof(path: &Path) -> Result<Vec<String>> {
     let content = read_bounded_text(path)?;
     let proof: ProofPublicSignals =
-        serde_json::from_str(&content).map_err(|e| Error::JsonParse {
+        crate::parser::bounded_json(&content).map_err(|e| Error::JsonParse {
             source: e,
             context: format!(
                 "failed to deserialize proof publicSignals from {}",

@@ -447,8 +447,8 @@ fn load_gnark_binary_vk(path: &Path, curve: CurveKind) -> Result<Groth16Verifica
 }
 
 fn validate_gnark_ic_len(ic_len: usize, remaining: usize, minimum_point_size: usize) -> Result<()> {
-    let max_ic_len = remaining / minimum_point_size;
-    if ic_len == 0 || ic_len > max_ic_len {
+    let max_ic_len = remaining.saturating_sub(8) / minimum_point_size;
+    if ic_len == 0 || ic_len > MAX_COLLECTION_ITEMS || ic_len > max_ic_len {
         return Err(Error::IcLengthMismatch(format!(
             "gnark G1.K length {ic_len} is impossible for {remaining} remaining bytes"
         )));
@@ -1007,7 +1007,7 @@ fn decimal_from_value(value: &Value, field: &str) -> Result<String> {
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let content = read_bounded_text(path)?;
-    serde_json::from_str::<T>(&content).map_err(|e| Error::JsonParse {
+    crate::parser::bounded_json::<T>(&content).map_err(|e| Error::JsonParse {
         source: e,
         context: format!("invalid gnark json in file {}", path.display()),
     })
@@ -1060,7 +1060,22 @@ mod tests {
     fn rejects_impossible_gnark_ic_length_before_allocation() {
         assert!(validate_gnark_ic_len(u32::MAX as usize, 64, 32).is_err());
         assert!(validate_gnark_ic_len(0, 64, 32).is_err());
-        assert!(validate_gnark_ic_len(2, 64, 32).is_ok());
+        for size in [32, 64, 48, 96] {
+            assert!(validate_gnark_ic_len(2, 2 * size + 8, size).is_ok());
+            assert!(validate_gnark_ic_len(2, 2 * size, size).is_err());
+            let excessive = crate::parser::MAX_COLLECTION_ITEMS + 1;
+            assert!(validate_gnark_ic_len(excessive, excessive * size + 8, size).is_err());
+        }
+        assert!(validate_gnark_ic_len(2, 72, 32).is_ok());
+        assert!(validate_gnark_ic_len(2, 64, 32).is_err());
+        assert!(
+            validate_gnark_ic_len(
+                crate::parser::MAX_COLLECTION_ITEMS + 1,
+                (crate::parser::MAX_COLLECTION_ITEMS + 1) * 32 + 8,
+                32
+            )
+            .is_err()
+        );
     }
 
     #[test]

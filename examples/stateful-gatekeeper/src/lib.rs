@@ -243,6 +243,7 @@ impl Gatekeeper {
         }
 
         let key = DataKey::Used(nullifier.clone());
+        // Archived persistent entries must be restored; restoration retains the used marker.
         if env.storage().persistent().has(&key) {
             return Err(GatekeeperError::Replay);
         }

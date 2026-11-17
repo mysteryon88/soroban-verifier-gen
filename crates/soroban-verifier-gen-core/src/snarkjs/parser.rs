@@ -169,7 +169,7 @@ fn parse_vk_alpha_1(v: Value) -> Result<SnarkJsG1> {
 
 fn read_json(path: &Path) -> Result<Value> {
     let content = read_bounded_text(path)?;
-    serde_json::from_str::<Value>(&content).map_err(|e| Error::JsonParse {
+    crate::parser::bounded_json::<Value>(&content).map_err(|e| Error::JsonParse {
         source: e,
         context: format!("invalid json in file {}", path.display()),
     })
@@ -452,7 +452,15 @@ fn parse_public_input_value(value: &Value, field_name: &str) -> Result<String> {
     }
 }
 
-fn parse_compact_scalar(raw: &str, field_name: &str) -> Result<String> {
+pub(crate) fn parse_compact_scalar(raw: &str, field_name: &str) -> Result<String> {
+    if let Some(bytes) = raw.strip_prefix("le:") {
+        if bytes.len() != 64 || !bytes.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(Error::DecimalParse(format!(
+                "{field_name} requires exactly 32 little-endian bytes"
+            )));
+        }
+        return Ok(BigUint::from_bytes_le(&decode_hex(bytes, field_name)?).to_string());
+    }
     let has_hex_prefix = raw.starts_with("0x") || raw.starts_with("0X");
     let value = if has_hex_prefix { &raw[2..] } else { raw };
     if has_hex_prefix {
@@ -484,18 +492,53 @@ fn parse_compact_scalar(raw: &str, field_name: &str) -> Result<String> {
         })?;
         return Ok(BigUint::from_bytes_le(&bytes).to_string());
     }
-    if value.chars().all(|c| c.is_ascii_hexdigit()) {
-        if value.len() > MAX_DECIMAL_DIGITS {
-            return Err(Error::DecimalParse(format!(
-                "{field_name} exceeds the maximum scalar length"
-            )));
-        }
-        let value = BigUint::parse_bytes(value.as_bytes(), 16)
-            .ok_or_else(|| Error::DecimalParse(format!("{field_name} invalid hex scalar")))?
-            .to_string();
-        return Ok(value);
-    }
     Err(Error::DecimalParse(format!(
         "{field_name} must be decimal or hex string"
     )))
+}
+
+#[cfg(test)]
+mod budget_regressions {
+    use super::*;
+    #[test]
+    fn rejects_unknown_collection_before_deserialization() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("unknown.json");
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"unknown\":[{}null]}}",
+                "null,".repeat(MAX_COLLECTION_ITEMS)
+            ),
+        )
+        .unwrap();
+        let err = read_json(&path).expect_err("must reject structural budget");
+        assert!(err.to_string().contains("collection"), "{err}");
+    }
+    #[test]
+    fn rejects_nested_aggregate_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("nested.json");
+        let array = format!("[{}null]", "null,".repeat(MAX_COLLECTION_ITEMS - 1));
+        std::fs::write(&path, format!("[{}]", vec![array; 17].join(","))).unwrap();
+        let err = read_json(&path).expect_err("must reject structural budget");
+        assert!(err.to_string().contains("budget"), "{err}");
+    }
+    #[test]
+    fn rejects_real_ic_and_public_ceilings_before_next_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("limit.json");
+        for key in ["IC", "public_inputs", "publicSignals", "unknown"] {
+            let text = format!(
+                "{{\"{key}\":[{}{{malformed]}}",
+                "null,".repeat(MAX_COLLECTION_ITEMS)
+            );
+            std::fs::write(&path, text).unwrap();
+            let err = read_json(&path).expect_err("must reject the collection limit");
+            assert!(err.to_string().contains("collection"), "{err}");
+        }
+        let points = vec!["[\"1\",\"2\",\"1\"]"; MAX_COLLECTION_ITEMS].join(",");
+        std::fs::write(&path, format!("{{\"IC\":[{points}]}}")).unwrap();
+        assert!(read_json(&path).is_ok());
+    }
 }

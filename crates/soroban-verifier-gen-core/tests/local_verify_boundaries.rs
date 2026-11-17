@@ -88,6 +88,6 @@ fn snarkjs_loader_bounds_public_input_arrays() {
             &artifacts.join("proof.json"),
             Some(&public),
         ),
-        Err(Error::PublicInputCountMismatch(_))
+        Err(Error::JsonParse { source, .. }) if source.to_string().contains("collection")
     ));
 }

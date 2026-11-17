@@ -239,13 +239,17 @@ where
 
     write_hex_file(&out_dir.join("vk.hex"), &vk_bytes).unwrap();
     write_hex_file(&out_dir.join("proof.hex"), &proof_bytes).unwrap();
-    write_hex_file(&out_dir.join("public_input.hex"), &image_bytes).unwrap();
+    write_file(
+        &out_dir.join("public_input.hex"),
+        format!("le:{}", to_hex(&image_bytes)).as_bytes(),
+    )
+    .unwrap();
     write_hex_file(&out_dir.join("proof_a.hex"), &proof_a_bytes).unwrap();
     write_hex_file(&out_dir.join("proof_b.hex"), &proof_b_bytes).unwrap();
     write_hex_file(&out_dir.join("proof_c.hex"), &proof_c_bytes).unwrap();
 
     let json = format!(
-        "{{\n  \"curve\": \"{}\",\n  \"vk\": \"{}\",\n  \"proof\": \"{}\",\n  \"public_input\": \"{}\",\n  \"proof_a\": \"{}\",\n  \"proof_b\": \"{}\",\n  \"proof_c\": \"{}\",\n  \"vk_alpha_g1\": \"{}\",\n  \"vk_beta_g2\": \"{}\",\n  \"vk_gamma_g2\": \"{}\",\n  \"vk_delta_g2\": \"{}\"\n}}",
+        "{{\n  \"curve\": \"{}\",\n  \"vk\": \"{}\",\n  \"proof\": \"{}\",\n  \"public_input\": \"le:{}\",\n  \"proof_a\": \"{}\",\n  \"proof_b\": \"{}\",\n  \"proof_c\": \"{}\",\n  \"vk_alpha_g1\": \"{}\",\n  \"vk_beta_g2\": \"{}\",\n  \"vk_gamma_g2\": \"{}\",\n  \"vk_delta_g2\": \"{}\"\n}}",
         name,
         to_hex(&vk_bytes),
         to_hex(&proof_bytes),
